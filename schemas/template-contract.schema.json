@@ -1,0 +1,321 @@
+{
+  "$defs": {
+    "Box": {
+      "additionalProperties": false,
+      "description": "Normalised slot geometry.\n\nFractions of the page rather than absolute units, so one contract survives\n4:3 vs 16:9 and PPTX EMU vs LaTeX pt.",
+      "properties": {
+        "x": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Y",
+          "type": "number"
+        },
+        "w": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "W",
+          "type": "number"
+        },
+        "h": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "H",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h"
+      ],
+      "title": "Box",
+      "type": "object"
+    },
+    "Layout": {
+      "additionalProperties": false,
+      "description": "One concrete page design, classified by the role it can serve.\n\nRole classification is what makes arbitrary user-uploaded templates usable:\nthe renderer matches ``SlideRole`` to a layout, never slide index to slide\nindex.",
+      "properties": {
+        "layout_id": {
+          "title": "Layout Id",
+          "type": "string"
+        },
+        "roles": {
+          "description": "Roles this layout can serve.",
+          "items": {
+            "$ref": "#/$defs/SlideRole"
+          },
+          "minItems": 1,
+          "title": "Roles",
+          "type": "array"
+        },
+        "slots": {
+          "items": {
+            "$ref": "#/$defs/Slot"
+          },
+          "minItems": 1,
+          "title": "Slots",
+          "type": "array"
+        },
+        "native_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Back-reference into the source template: a PPTX layout name, or a Beamer frame template name.",
+          "title": "Native Ref"
+        },
+        "preview_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview Path"
+        }
+      },
+      "required": [
+        "layout_id",
+        "roles",
+        "slots"
+      ],
+      "title": "Layout",
+      "type": "object"
+    },
+    "Renderer": {
+      "description": "Target back end. Both consume the identical IR.",
+      "enum": [
+        "pptx",
+        "beamer"
+      ],
+      "title": "Renderer",
+      "type": "string"
+    },
+    "SlideRole": {
+      "description": "Functional page type.\n\nTemplate layouts are classified into these same roles, which is how a deck\nbecomes renderable against an arbitrary user-supplied template: the\nrenderer matches ``SlideRole`` -> layout, not slide index -> layout.",
+      "enum": [
+        "cover",
+        "agenda",
+        "section",
+        "text_dense",
+        "text_figure",
+        "big_figure",
+        "two_column",
+        "three_column",
+        "table",
+        "equation",
+        "timeline",
+        "summary",
+        "acknowledgement",
+        "backup"
+      ],
+      "title": "SlideRole",
+      "type": "string"
+    },
+    "Slot": {
+      "additionalProperties": false,
+      "description": "A fillable region within a layout, with its measured capacity.",
+      "properties": {
+        "slot_id": {
+          "title": "Slot Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "title",
+            "subtitle",
+            "body",
+            "figure",
+            "table",
+            "equation",
+            "footer",
+            "logo"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "box": {
+          "$ref": "#/$defs/Box"
+        },
+        "capacity_units": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Budget units this slot holds at its nominal font size, from real glyph measurement. The single most important field in the contract: it is what lets the planner avoid overflow instead of detecting it afterwards.",
+          "title": "Capacity Units"
+        },
+        "capacity_lines": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Line count at nominal size, for bullet-count caps.",
+          "title": "Capacity Lines"
+        },
+        "font_size_pt": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Nominal font size.",
+          "title": "Font Size Pt"
+        },
+        "min_font_size_pt": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Floor for autofit shrinking. Academic venues have legibility expectations; shrinking to 9pt to force a fit is a defect, not a solution.",
+          "title": "Min Font Size Pt"
+        },
+        "max_bullet_level": {
+          "default": 3,
+          "maximum": 5,
+          "minimum": 0,
+          "title": "Max Bullet Level",
+          "type": "integer"
+        },
+        "required": {
+          "default": false,
+          "description": "Layout is invalid if this slot is empty.",
+          "title": "Required",
+          "type": "boolean"
+        },
+        "accepts_overflow_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Sibling slot whose surplus content may spill here, enabling two-column reflow without a new layout.",
+          "title": "Accepts Overflow From"
+        }
+      },
+      "required": [
+        "slot_id",
+        "kind",
+        "box"
+      ],
+      "title": "Slot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Everything the renderer needs to know about one template.",
+  "properties": {
+    "template_id": {
+      "title": "Template Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "renderer": {
+      "$ref": "#/$defs/Renderer"
+    },
+    "source_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Path"
+    },
+    "page_aspect": {
+      "default": "16:9",
+      "description": "Nominal page aspect ratio.",
+      "title": "Page Aspect",
+      "type": "string"
+    },
+    "layouts": {
+      "items": {
+        "$ref": "#/$defs/Layout"
+      },
+      "minItems": 1,
+      "title": "Layouts",
+      "type": "array"
+    },
+    "license": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Redistribution terms. Shipping templates of unknown provenance would make the project unusable in practice, so this is tracked explicitly.",
+      "title": "License"
+    },
+    "fonts": {
+      "description": "Fonts the template depends on, for substitution warnings.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Fonts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "template_id",
+    "name",
+    "renderer",
+    "layouts"
+  ],
+  "title": "TemplateContract",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rostrum/rostrum/schemas/template-contract.schema.json"
+}

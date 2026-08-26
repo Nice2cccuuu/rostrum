@@ -1,0 +1,866 @@
+{
+  "$defs": {
+    "Asset": {
+      "additionalProperties": false,
+      "description": "A reusable visual resource referenced by one or more blocks.\n\nAssets are stored once at deck level and referenced by ``uid``. Extraction\nis the default and generation is the exception -- reusing the author's own\nfigures is precisely what separates a domain tool from a generic deck\nbuilder.",
+      "properties": {
+        "uid": {
+          "pattern": "^[a-z]{3}_[0-9a-f]{12}$",
+          "title": "Uid",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AssetKind"
+        },
+        "origin": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/AssetOrigin"
+            }
+          ],
+          "default": "extracted"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Location of the asset payload on disk.",
+          "title": "Path"
+        },
+        "latex": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "LaTeX body, for equation assets and Beamer-native tables.",
+          "title": "Latex"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured payload for redrawn charts and tables, so the renderer can emit a native chart object instead of a flat bitmap.",
+          "title": "Data"
+        },
+        "caption": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caption"
+        },
+        "source_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Label in the source document, e.g. 'Figure 3'.",
+          "title": "Source Label"
+        },
+        "spans": {
+          "description": "Provenance of the asset, required unless authored.",
+          "items": {
+            "$ref": "#/$defs/SourceSpan"
+          },
+          "title": "Spans",
+          "type": "array"
+        },
+        "intrinsic_aspect": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "width/height of the asset. Lets the layout engine reserve a correctly shaped hole before the renderer runs.",
+          "title": "Intrinsic Aspect"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "Asset",
+      "type": "object"
+    },
+    "AssetKind": {
+      "enum": [
+        "figure",
+        "table",
+        "equation",
+        "chart"
+      ],
+      "title": "AssetKind",
+      "type": "string"
+    },
+    "AssetOrigin": {
+      "description": "Where a visual asset came from.\n\nFor academic use the default must be *extraction*, never generation: an\nunattributable decorative image is a liability at a defence. Generated\nassets are representable but are flagged by the validator.",
+      "enum": [
+        "extracted",
+        "redrawn",
+        "authored",
+        "generated"
+      ],
+      "title": "AssetOrigin",
+      "type": "string"
+    },
+    "Block": {
+      "additionalProperties": false,
+      "description": "The atomic, addressable unit of content.\n\nA block is simultaneously the unit of budgeting, of channel routing, of\nclick-selection in the preview, and of patching. Keeping all four aligned\non one granularity is what makes natural-language edits deterministic:\na patch names a block ``uid`` and provably cannot disturb anything else.",
+      "properties": {
+        "uid": {
+          "pattern": "^[a-z]{3}_[0-9a-f]{12}$",
+          "title": "Uid",
+          "type": "string"
+        },
+        "type": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/BlockType"
+            }
+          ],
+          "default": "bullet"
+        },
+        "content": {
+          "default": "",
+          "description": "Rendered text. LaTeX for equations, source text for code, empty for pure figure blocks.",
+          "title": "Content",
+          "type": "string"
+        },
+        "level": {
+          "default": 0,
+          "description": "Nesting depth for bullet hierarchies.",
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Level",
+          "type": "integer"
+        },
+        "asset_ref": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z]{3}_[0-9a-f]{12}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Asset consumed by this block.",
+          "title": "Asset Ref"
+        },
+        "bound_to": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z]{3}_[0-9a-f]{12}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For captions: the sibling block this caption belongs to. Keeps a caption from being separated from its figure by an edit.",
+          "title": "Bound To"
+        },
+        "derivation": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Derivation"
+            }
+          ],
+          "default": "compressed"
+        },
+        "spans": {
+          "items": {
+            "$ref": "#/$defs/SourceSpan"
+          },
+          "title": "Spans",
+          "type": "array"
+        },
+        "needs_confirmation": {
+          "default": false,
+          "description": "Set by the pipeline when content is inferred or otherwise unsupported. The UI must surface these before export.",
+          "title": "Needs Confirmation",
+          "type": "boolean"
+        },
+        "importance": {
+          "default": 0.5,
+          "description": "Salience used to allocate the duration budget and to decide what degrades to the script channel first.",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Importance",
+          "type": "number"
+        },
+        "channel": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Channel"
+            }
+          ],
+          "default": "slide"
+        },
+        "word_budget": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Upper bound on rendered length, assigned before drafting. Unit matches the deck's language: CJK characters or English words.",
+          "title": "Word Budget"
+        },
+        "speaker_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Spoken elaboration for a block that stays on the slide. Distinct from a script-channel block, which has no slide presence at all.",
+          "title": "Speaker Note"
+        },
+        "pinned": {
+          "default": false,
+          "description": "User-protected. Budget rebalancing and automated compression must leave pinned blocks untouched.",
+          "title": "Pinned",
+          "type": "boolean"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        }
+      },
+      "title": "Block",
+      "type": "object"
+    },
+    "BlockType": {
+      "description": "Kind of atomic content unit.\n\nA block is the smallest unit that can be independently budgeted, routed to\na channel, patched, or click-selected in the preview.",
+      "enum": [
+        "bullet",
+        "figure",
+        "table",
+        "equation",
+        "code",
+        "quote",
+        "note",
+        "caption"
+      ],
+      "title": "BlockType",
+      "type": "string"
+    },
+    "Channel": {
+      "description": "Dual-track routing target.\n\nThis is the field that implements the \"what goes on the slide vs. what the\npresenter merely says\" split. Both channels are projections of the *same*\ncontent tree, which is what keeps the spoken script and the slides from\ndrifting apart.",
+      "enum": [
+        "slide",
+        "script",
+        "drop"
+      ],
+      "title": "Channel",
+      "type": "string"
+    },
+    "DeckMeta": {
+      "additionalProperties": false,
+      "description": "Bibliographic and contextual metadata.",
+      "properties": {
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "subtitle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subtitle"
+        },
+        "presenter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Presenter"
+        },
+        "affiliation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Affiliation"
+        },
+        "venue": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Venue"
+        },
+        "date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Date"
+        },
+        "language": {
+          "default": "zh",
+          "enum": [
+            "zh",
+            "en",
+            "mixed"
+          ],
+          "title": "Language",
+          "type": "string"
+        },
+        "scenario": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Scenario"
+            }
+          ],
+          "default": "academic_talk"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "DeckMeta",
+      "type": "object"
+    },
+    "DeliveryPlan": {
+      "additionalProperties": false,
+      "description": "The talk's timing contract.\n\nThis is the input to budget allocation: the pair (duration, density) is\nwhat turns \"which content survives\" from a matter of taste into an\narithmetic constraint.",
+      "properties": {
+        "total_seconds": {
+          "description": "Target speaking time, excluding Q&A and backup slides.",
+          "exclusiveMinimum": 0,
+          "title": "Total Seconds",
+          "type": "integer"
+        },
+        "words_per_minute": {
+          "default": 210,
+          "description": "Speaking rate in budget units per minute. ~200-240 CJK characters/min is typical for rehearsed Mandarin delivery; ~130-150 words/min for English.",
+          "exclusiveMinimum": 0,
+          "title": "Words Per Minute",
+          "type": "integer"
+        },
+        "density": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Density"
+            }
+          ],
+          "default": "balanced"
+        },
+        "target_dwell_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Preferred seconds per slide. Together with total_seconds this pins the slide count.",
+          "title": "Target Dwell Seconds"
+        },
+        "reserve_ratio": {
+          "default": 0.1,
+          "description": "Fraction of time held back for overruns and reviewer interruptions. Budgeting to 100% of the clock reliably overruns.",
+          "exclusiveMaximum": 0.9,
+          "minimum": 0.0,
+          "title": "Reserve Ratio",
+          "type": "number"
+        }
+      },
+      "required": [
+        "total_seconds"
+      ],
+      "title": "DeliveryPlan",
+      "type": "object"
+    },
+    "Density": {
+      "description": "User preference for how much text lands on each slide.\n\nResolved into concrete numeric caps by\n:mod:`rostrum.budget.density`, so downstream code never branches on the\nenum directly.",
+      "enum": [
+        "sparse",
+        "balanced",
+        "compact"
+      ],
+      "title": "Density",
+      "type": "string"
+    },
+    "Derivation": {
+      "description": "How a block's text relates to the source document.\n\nTraceability is enforced structurally rather than by prompt instruction:\nanything that is not ``AUTHORED`` must carry at least one\n:class:`~rostrum.ir.nodes.SourceSpan`, and ``INFERRED`` content is surfaced\nto the user for confirmation. In a grant-defence setting a single\nfabricated number is fatal, so this is a hard constraint of the schema.",
+      "enum": [
+        "verbatim",
+        "compressed",
+        "synthesized",
+        "inferred",
+        "authored"
+      ],
+      "title": "Derivation",
+      "type": "string"
+    },
+    "Renderer": {
+      "description": "Target back end. Both consume the identical IR.",
+      "enum": [
+        "pptx",
+        "beamer"
+      ],
+      "title": "Renderer",
+      "type": "string"
+    },
+    "Scenario": {
+      "description": "Talk genre. Selects the default rubric profile and section weights.",
+      "enum": [
+        "academic_talk",
+        "conference_oral",
+        "grant_defense",
+        "thesis_defense",
+        "group_meeting",
+        "generic"
+      ],
+      "title": "Scenario",
+      "type": "string"
+    },
+    "Section": {
+      "additionalProperties": false,
+      "description": "A logical movement of the talk.\n\nSections are the unit at which the duration budget is split, and the unit a\nrubric checks for completeness -- e.g. a grant defence that never states\nits innovation claim is structurally incomplete regardless of how polished\nthe individual slides are.",
+      "properties": {
+        "uid": {
+          "pattern": "^[a-z]{3}_[0-9a-f]{12}$",
+          "title": "Uid",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "slides": {
+          "items": {
+            "$ref": "#/$defs/Slide"
+          },
+          "title": "Slides",
+          "type": "array"
+        },
+        "weight": {
+          "default": 1.0,
+          "description": "Relative share of the talk. Deliberately not uniform: for a grant defence, innovation and prior results deserve more airtime than the outline.",
+          "exclusiveMinimum": 0.0,
+          "title": "Weight",
+          "type": "number"
+        },
+        "rubric_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which rubric requirement this section discharges, enabling missing-section detection.",
+          "title": "Rubric Key"
+        },
+        "intent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "One-line statement of what this section must achieve.",
+          "title": "Intent"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "Section",
+      "type": "object"
+    },
+    "Slide": {
+      "additionalProperties": false,
+      "description": "One page of the deck.\n\n``role`` is the join key against the template's layout catalogue. The\nrenderer resolves role -> layout -> slot capacities, so the same IR can be\npoured into any template that declares the roles it supports.",
+      "properties": {
+        "uid": {
+          "pattern": "^[a-z]{3}_[0-9a-f]{12}$",
+          "title": "Uid",
+          "type": "string"
+        },
+        "role": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/SlideRole"
+            }
+          ],
+          "default": "text_dense"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "subtitle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subtitle"
+        },
+        "blocks": {
+          "items": {
+            "$ref": "#/$defs/Block"
+          },
+          "title": "Blocks",
+          "type": "array"
+        },
+        "dwell_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Planned time on this slide. Summed across slides this must reconcile with the talk's total duration.",
+          "title": "Dwell Seconds"
+        },
+        "layout_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional specific layout id, overriding role-based matching. Escape hatch for users who know their own template.",
+          "title": "Layout Hint"
+        },
+        "is_backup": {
+          "default": false,
+          "description": "Reserve slide, excluded from the duration budget.",
+          "title": "Is Backup",
+          "type": "boolean"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Slide-level speaker preamble.",
+          "title": "Notes"
+        }
+      },
+      "title": "Slide",
+      "type": "object"
+    },
+    "SlideRole": {
+      "description": "Functional page type.\n\nTemplate layouts are classified into these same roles, which is how a deck\nbecomes renderable against an arbitrary user-supplied template: the\nrenderer matches ``SlideRole`` -> layout, not slide index -> layout.",
+      "enum": [
+        "cover",
+        "agenda",
+        "section",
+        "text_dense",
+        "text_figure",
+        "big_figure",
+        "two_column",
+        "three_column",
+        "table",
+        "equation",
+        "timeline",
+        "summary",
+        "acknowledgement",
+        "backup"
+      ],
+      "title": "SlideRole",
+      "type": "string"
+    },
+    "SourceDocument": {
+      "additionalProperties": false,
+      "description": "An ingested input document.",
+      "properties": {
+        "doc_id": {
+          "title": "Doc Id",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Original file path or URI, for re-ingestion.",
+          "title": "Path"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Digest of the raw input. Lets the tool detect that a source changed underneath an existing deck.",
+          "title": "Sha256"
+        },
+        "char_count": {
+          "default": 0,
+          "description": "Length of the normalised text; bounds all spans.",
+          "minimum": 0,
+          "title": "Char Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "doc_id"
+      ],
+      "title": "SourceDocument",
+      "type": "object"
+    },
+    "SourceSpan": {
+      "additionalProperties": false,
+      "description": "A pointer back into the ingested source document.\n\nCharacter offsets refer to the *normalised* source text produced at ingest\ntime (``SourceDocument.normalized_text``), not to raw bytes of the original\nPDF, so that offsets remain meaningful across re-parses of the same input.",
+      "properties": {
+        "doc_id": {
+          "description": "Identifier of the source document this span belongs to.",
+          "title": "Doc Id",
+          "type": "string"
+        },
+        "start": {
+          "description": "Inclusive start offset into the normalised source text.",
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        },
+        "end": {
+          "description": "Exclusive end offset into the normalised source text.",
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "locator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional human-facing location such as 'p.4' or 'sec:method', used for UI display and for citing back to the author.",
+          "title": "Locator"
+        },
+        "quote": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Verbatim excerpt cached for offline review. Advisory only: offsets are authoritative.",
+          "title": "Quote"
+        }
+      },
+      "required": [
+        "doc_id",
+        "start",
+        "end"
+      ],
+      "title": "SourceSpan",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Root node: a complete, renderer-agnostic presentation plan.\n\nA ``Deck`` is the single source of truth. Slides, the speaker script, the\noutline preview and the rubric report are all *projections* of this one\ntree, which is why they cannot contradict each other.",
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version"
+    },
+    "uid": {
+      "pattern": "^[a-z]{3}_[0-9a-f]{12}$",
+      "title": "Uid",
+      "type": "string"
+    },
+    "meta": {
+      "$ref": "#/$defs/DeckMeta"
+    },
+    "delivery": {
+      "$ref": "#/$defs/DeliveryPlan"
+    },
+    "sections": {
+      "items": {
+        "$ref": "#/$defs/Section"
+      },
+      "title": "Sections",
+      "type": "array"
+    },
+    "assets": {
+      "items": {
+        "$ref": "#/$defs/Asset"
+      },
+      "title": "Assets",
+      "type": "array"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/SourceDocument"
+      },
+      "title": "Sources",
+      "type": "array"
+    },
+    "template_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Template this deck is currently bound to, if any.",
+      "title": "Template Id"
+    },
+    "targets": {
+      "description": "Renderers this deck is intended for.",
+      "items": {
+        "$ref": "#/$defs/Renderer"
+      },
+      "title": "Targets",
+      "type": "array"
+    },
+    "rubric_profile": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Rubric profile id used for completeness checking.",
+      "title": "Rubric Profile"
+    }
+  },
+  "required": [
+    "meta",
+    "delivery"
+  ],
+  "title": "Deck",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rostrum/rostrum/schemas/deck.schema.json"
+}

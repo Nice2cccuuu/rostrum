@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rostrum"
+version = "0.2.0"
+description = "Duration-aware presentation generation for academic talks and grant defences"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+keywords = ["presentation", "pptx", "beamer", "latex", "academic", "slides"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Text Processing :: Markup :: LaTeX",
+]
+dependencies = ["pydantic>=2.5"]
+
+# The PPTX renderer needs python-pptx and real glyph metrics; the IR layer alone
+# does not, so it stays installable without them.
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "jsonschema>=4.0", "ruff>=0.4"]
+# Renderers land in v0.2-v0.3; kept separate so the IR layer stays lightweight.
+pptx = ["python-pptx>=0.6.23", "fonttools>=4.40"]
+
+[project.scripts]
+rostrum = "rostrum.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rostrum/rostrum"
+Issues = "https://github.com/rostrum/rostrum/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rostrum"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# RUF001 flags full-width CJK punctuation as "ambiguous". This project targets
+# Chinese academic talks: full-width punctuation is legitimate test data and
+# example content, not a typo.
+ignore = ["E501", "RUF001"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]

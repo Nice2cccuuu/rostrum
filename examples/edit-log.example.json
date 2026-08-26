@@ -1,0 +1,30 @@
+{
+  "deck_uid": "dck_1bf24601e623",
+  "patches": [
+    {
+      "patch_id": "p1",
+      "created_at": "2026-01-01T00:00:00Z",
+      "utterance": "第二页太满了，第二条只说不写；第一条压到十五个字以内",
+      "selection": [
+        "sld_d4e7a676a535"
+      ],
+      "operations": [
+        {
+          "target": "blk_3a1d339cf62b",
+          "rationale": "用户要求『只说不写』",
+          "op": "set_channel",
+          "channel": "script"
+        },
+        {
+          "target": "blk_b355f76f1eee",
+          "rationale": "用户要求『压到十五个字以内』",
+          "op": "rewrite",
+          "instruction": "压缩到十五个字以内，保留标注成本这一核心",
+          "max_units": 15,
+          "preserve_spans": true
+        }
+      ],
+      "confidence": 0.92
+    }
+  ]
+}

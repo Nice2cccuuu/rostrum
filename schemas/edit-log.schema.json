@@ -1,0 +1,1138 @@
+{
+  "$defs": {
+    "Channel": {
+      "description": "Dual-track routing target.\n\nThis is the field that implements the \"what goes on the slide vs. what the\npresenter merely says\" split. Both channels are projections of the *same*\ncontent tree, which is what keeps the spoken script and the slides from\ndrifting apart.",
+      "enum": [
+        "slide",
+        "script",
+        "drop"
+      ],
+      "title": "Channel",
+      "type": "string"
+    },
+    "DeleteBlock": {
+      "additionalProperties": false,
+      "description": "Soft delete: routes to the ``drop`` channel so the decision is reversible.",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "delete_block",
+          "default": "delete_block",
+          "title": "Op"
+        },
+        "hard": {
+          "default": false,
+          "description": "Remove from the tree entirely rather than marking dropped.",
+          "title": "Hard",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "DeleteBlock",
+      "type": "object"
+    },
+    "Density": {
+      "description": "User preference for how much text lands on each slide.\n\nResolved into concrete numeric caps by\n:mod:`rostrum.budget.density`, so downstream code never branches on the\nenum directly.",
+      "enum": [
+        "sparse",
+        "balanced",
+        "compact"
+      ],
+      "title": "Density",
+      "type": "string"
+    },
+    "InsertBlock": {
+      "additionalProperties": false,
+      "description": "Insert a new block relative to ``target``.",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "insert_block",
+          "default": "insert_block",
+          "title": "Op"
+        },
+        "position": {
+          "default": "after",
+          "enum": [
+            "before",
+            "after",
+            "append"
+          ],
+          "title": "Position",
+          "type": "string"
+        },
+        "block": {
+          "description": "Serialised Block payload, validated on apply.",
+          "title": "Block",
+          "type": "object"
+        }
+      },
+      "required": [
+        "target",
+        "block"
+      ],
+      "title": "InsertBlock",
+      "type": "object"
+    },
+    "MergeBlocks": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "merge_blocks",
+          "default": "merge_blocks",
+          "title": "Op"
+        },
+        "others": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Others",
+          "type": "array"
+        },
+        "separator": {
+          "default": "; ",
+          "title": "Separator",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "others"
+      ],
+      "title": "MergeBlocks",
+      "type": "object"
+    },
+    "MoveBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "move_block",
+          "default": "move_block",
+          "title": "Op"
+        },
+        "to_slide": {
+          "title": "To Slide",
+          "type": "string"
+        },
+        "index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Index"
+        }
+      },
+      "required": [
+        "target",
+        "to_slide"
+      ],
+      "title": "MoveBlock",
+      "type": "object"
+    },
+    "Patch": {
+      "additionalProperties": false,
+      "description": "An atomic, reviewable batch of operations.\n\nA patch is all-or-nothing: either every op applies or the deck is left\nuntouched, so a partially understood instruction cannot leave the deck in a\nhalf-edited state.",
+      "properties": {
+        "patch_id": {
+          "title": "Patch Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "utterance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The user's original request, kept verbatim for audit.",
+          "title": "Utterance"
+        },
+        "selection": {
+          "description": "Uids the user had selected in the preview, if any. Lets 'make this shorter' resolve without a textual description of the target.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Selection",
+          "type": "array"
+        },
+        "operations": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "delete_block": "#/$defs/DeleteBlock",
+                "insert_block": "#/$defs/InsertBlock",
+                "merge_blocks": "#/$defs/MergeBlocks",
+                "move_block": "#/$defs/MoveBlock",
+                "pin": "#/$defs/Pin",
+                "reorder_slides": "#/$defs/ReorderSlides",
+                "replace_asset": "#/$defs/ReplaceAsset",
+                "retime": "#/$defs/Retime",
+                "rewrite": "#/$defs/Rewrite",
+                "set_backup": "#/$defs/SetBackup",
+                "set_caption": "#/$defs/SetCaption",
+                "set_channel": "#/$defs/SetChannel",
+                "set_dwell": "#/$defs/SetDwell",
+                "set_importance": "#/$defs/SetImportance",
+                "set_slide_role": "#/$defs/SetSlideRole",
+                "set_style": "#/$defs/SetStyle",
+                "set_text": "#/$defs/SetText",
+                "set_title": "#/$defs/SetTitle",
+                "split_block": "#/$defs/SplitBlock",
+                "split_slide": "#/$defs/SplitSlide"
+              },
+              "propertyName": "op"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/SetText"
+              },
+              {
+                "$ref": "#/$defs/Rewrite"
+              },
+              {
+                "$ref": "#/$defs/SplitBlock"
+              },
+              {
+                "$ref": "#/$defs/MergeBlocks"
+              },
+              {
+                "$ref": "#/$defs/DeleteBlock"
+              },
+              {
+                "$ref": "#/$defs/InsertBlock"
+              },
+              {
+                "$ref": "#/$defs/SetChannel"
+              },
+              {
+                "$ref": "#/$defs/SetImportance"
+              },
+              {
+                "$ref": "#/$defs/Pin"
+              },
+              {
+                "$ref": "#/$defs/SetDwell"
+              },
+              {
+                "$ref": "#/$defs/Retime"
+              },
+              {
+                "$ref": "#/$defs/MoveBlock"
+              },
+              {
+                "$ref": "#/$defs/ReorderSlides"
+              },
+              {
+                "$ref": "#/$defs/SplitSlide"
+              },
+              {
+                "$ref": "#/$defs/SetSlideRole"
+              },
+              {
+                "$ref": "#/$defs/SetBackup"
+              },
+              {
+                "$ref": "#/$defs/SetTitle"
+              },
+              {
+                "$ref": "#/$defs/ReplaceAsset"
+              },
+              {
+                "$ref": "#/$defs/SetCaption"
+              },
+              {
+                "$ref": "#/$defs/SetStyle"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Operations",
+          "type": "array"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Interpreter confidence. Low-confidence patches should be shown as a proposed diff for confirmation rather than auto-applied.",
+          "title": "Confidence"
+        }
+      },
+      "required": [
+        "patch_id",
+        "operations"
+      ],
+      "title": "Patch",
+      "type": "object"
+    },
+    "Pin": {
+      "additionalProperties": false,
+      "description": "Protect a block from automatic rebalancing.",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "pin",
+          "default": "pin",
+          "title": "Op"
+        },
+        "pinned": {
+          "default": true,
+          "title": "Pinned",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "Pin",
+      "type": "object"
+    },
+    "ReorderSlides": {
+      "additionalProperties": false,
+      "description": "Reorder slides within the section named by ``target``.",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "reorder_slides",
+          "default": "reorder_slides",
+          "title": "Op"
+        },
+        "order": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Order",
+          "type": "array"
+        }
+      },
+      "required": [
+        "target",
+        "order"
+      ],
+      "title": "ReorderSlides",
+      "type": "object"
+    },
+    "ReplaceAsset": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "replace_asset",
+          "default": "replace_asset",
+          "title": "Op"
+        },
+        "asset_ref": {
+          "title": "Asset Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "asset_ref"
+      ],
+      "title": "ReplaceAsset",
+      "type": "object"
+    },
+    "Retime": {
+      "additionalProperties": false,
+      "description": "Change the talk's global timing contract and re-run allocation.\n\n``target`` is the deck uid. Re-budgeting is a first-class edit, not a\nregeneration: \"cut it to eight minutes\" must preserve every pinned decision\nthe user already made.",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "retime",
+          "default": "retime",
+          "title": "Op"
+        },
+        "total_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Seconds"
+        },
+        "density": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Density"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_dwell_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Dwell Seconds"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "Retime",
+      "type": "object"
+    },
+    "Rewrite": {
+      "additionalProperties": false,
+      "description": "Rewrite under a length constraint, preserving provenance.\n\nDistinct from :class:`SetText`: the pipeline re-drafts from the block's\nexisting source spans, so shortening a bullet cannot invent new facts.",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "rewrite",
+          "default": "rewrite",
+          "title": "Op"
+        },
+        "instruction": {
+          "title": "Instruction",
+          "type": "string"
+        },
+        "max_units": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Units"
+        },
+        "preserve_spans": {
+          "default": true,
+          "title": "Preserve Spans",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target",
+        "instruction"
+      ],
+      "title": "Rewrite",
+      "type": "object"
+    },
+    "SetBackup": {
+      "additionalProperties": false,
+      "description": "Move a slide into or out of the reserve set.",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "set_backup",
+          "default": "set_backup",
+          "title": "Op"
+        },
+        "is_backup": {
+          "default": true,
+          "title": "Is Backup",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "SetBackup",
+      "type": "object"
+    },
+    "SetCaption": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "set_caption",
+          "default": "set_caption",
+          "title": "Op"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "value"
+      ],
+      "title": "SetCaption",
+      "type": "object"
+    },
+    "SetChannel": {
+      "additionalProperties": false,
+      "description": "Move content between the slide and the speaker script.\n\nThe single most common edit in practice: \"this is too crowded, just say\nthis part.\"",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "set_channel",
+          "default": "set_channel",
+          "title": "Op"
+        },
+        "channel": {
+          "$ref": "#/$defs/Channel"
+        }
+      },
+      "required": [
+        "target",
+        "channel"
+      ],
+      "title": "SetChannel",
+      "type": "object"
+    },
+    "SetDwell": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "set_dwell",
+          "default": "set_dwell",
+          "title": "Op"
+        },
+        "seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "target",
+        "seconds"
+      ],
+      "title": "SetDwell",
+      "type": "object"
+    },
+    "SetImportance": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "set_importance",
+          "default": "set_importance",
+          "title": "Op"
+        },
+        "value": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "target",
+        "value"
+      ],
+      "title": "SetImportance",
+      "type": "object"
+    },
+    "SetSlideRole": {
+      "additionalProperties": false,
+      "description": "Change page type, e.g. from text-dense to text-plus-figure.",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "set_slide_role",
+          "default": "set_slide_role",
+          "title": "Op"
+        },
+        "role": {
+          "$ref": "#/$defs/SlideRole"
+        },
+        "layout_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layout Hint"
+        }
+      },
+      "required": [
+        "target",
+        "role"
+      ],
+      "title": "SetSlideRole",
+      "type": "object"
+    },
+    "SetStyle": {
+      "additionalProperties": false,
+      "description": "Deliberately narrow style override.\n\nStyling belongs to the template, not the content tree. This op exists for\ngenuine one-off exceptions and is intentionally restricted to a small set of\nproperties so that it cannot become a back door for per-slide theming.",
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "set_style",
+          "default": "set_style",
+          "title": "Op"
+        },
+        "font_size_pt": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Font Size Pt"
+        },
+        "emphasis": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "bold",
+                "italic",
+                "highlight"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Emphasis"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "SetStyle",
+      "type": "object"
+    },
+    "SetText": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "set_text",
+          "default": "set_text",
+          "title": "Op"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "value"
+      ],
+      "title": "SetText",
+      "type": "object"
+    },
+    "SetTitle": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "set_title",
+          "default": "set_title",
+          "title": "Op"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "subtitle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subtitle"
+        }
+      },
+      "required": [
+        "target",
+        "value"
+      ],
+      "title": "SetTitle",
+      "type": "object"
+    },
+    "SlideRole": {
+      "description": "Functional page type.\n\nTemplate layouts are classified into these same roles, which is how a deck\nbecomes renderable against an arbitrary user-supplied template: the\nrenderer matches ``SlideRole`` -> layout, not slide index -> layout.",
+      "enum": [
+        "cover",
+        "agenda",
+        "section",
+        "text_dense",
+        "text_figure",
+        "big_figure",
+        "two_column",
+        "three_column",
+        "table",
+        "equation",
+        "timeline",
+        "summary",
+        "acknowledgement",
+        "backup"
+      ],
+      "title": "SlideRole",
+      "type": "string"
+    },
+    "SplitBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "split_block",
+          "default": "split_block",
+          "title": "Op"
+        },
+        "parts": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit fragments; when omitted the pipeline decides.",
+          "title": "Parts"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "SplitBlock",
+      "type": "object"
+    },
+    "SplitSlide": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "description": "Opaque uid of the node being edited. Never a path.",
+          "title": "Target",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why this op was emitted, quoting the user's phrasing. Shown in the edit history so a later reader can tell intent from accident.",
+          "title": "Rationale"
+        },
+        "op": {
+          "const": "split_slide",
+          "default": "split_slide",
+          "title": "Op"
+        },
+        "after_block": {
+          "title": "After Block",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "after_block"
+      ],
+      "title": "SplitSlide",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Append-only history of applied patches.\n\nDeck state is a fold of this log over the initial IR, which gives undo,\nredo, replay and blame for free.",
+  "properties": {
+    "deck_uid": {
+      "title": "Deck Uid",
+      "type": "string"
+    },
+    "patches": {
+      "items": {
+        "$ref": "#/$defs/Patch"
+      },
+      "title": "Patches",
+      "type": "array"
+    }
+  },
+  "required": [
+    "deck_uid"
+  ],
+  "title": "EditLog",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rostrum/rostrum/schemas/edit-log.schema.json"
+}

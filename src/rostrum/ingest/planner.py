@@ -1,0 +1,771 @@
+"""Content planner: parsed document to deck IR.
+
+This is where the pipeline earns its keep. A parsed manuscript is a flat list of
+segments; a talk is a budgeted sequence of slides. Turning one into the other
+requires three judgements the parsers deliberately avoid making:
+
+1. **Where sections break.** The author's headings are a starting point, not the
+   answer: a 12-page "Method" section cannot be one slide.
+2. **What matters.** Every segment gets an ``importance`` score, which is what
+   the budget allocator later spends its words on. Getting this wrong is what
+   makes a generated deck feel like a random excerpt.
+3. **What belongs on screen versus in the mouth.** Detail, justification and
+   caveats route to ``Channel.SCRIPT``; claims and numbers stay on the slide.
+
+Everything emitted here carries ``spans`` back to the manuscript, and nothing is
+invented: block text is either the author's words (``VERBATIM``) or a truncation
+of them (``COMPRESSED``). Any real summarisation is left to an optional LLM pass
+that must mark its output ``SYNTHESIZED``, so the provenance rules stay honest
+with or without a model.
+"""
+
+from __future__ import annotations
+
+import re
+
+from rostrum.ingest.model import ParsedDocument, Segment, SegmentKind
+from rostrum.ir.enums import (
+    AssetOrigin,
+    BlockType,
+    Channel,
+    Density,
+    Derivation,
+    Scenario,
+    SlideRole,
+)
+from rostrum.ir.nodes import (
+    Asset,
+    Block,
+    Deck,
+    DeckMeta,
+    DeliveryPlan,
+    Section,
+    Slide,
+)
+
+# --------------------------------------------------------------------------- #
+# Rubric mapping
+# --------------------------------------------------------------------------- #
+
+# Heading keywords that identify each rubric slot, per scenario family. Ordered
+# most specific first: "研究基础" must beat "研究" when both could match.
+_RUBRIC_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
+    ("innovation", ("创新点", "创新性", "特色与创新", "novelty", "contribution", "innovation")),
+    ("prior_work", ("研究基础", "前期工作", "工作基础", "预研", "preliminary", "prior work", "related work", "背景与相关工作")),
+    ("feasibility", ("可行性", "条件保障", "研究条件", "feasibility")),
+    ("schedule", ("研究计划", "进度安排", "时间安排", "年度计划", "schedule", "timeline", "milestone")),
+    ("budget", ("经费", "预算", "budget", "funding")),
+    ("risks", ("风险", "挑战", "不足", "局限", "risk", "limitation", "challenge")),
+    ("objectives", ("研究目标", "研究内容", "拟解决", "目标与内容", "objective", "aim", "goal", "research question")),
+    ("methods", ("研究方法", "技术路线", "方案", "方法", "实施", "method", "approach", "technical route", "实验设计")),
+    ("motivation", ("研究背景", "立项依据", "问题", "意义", "现状", "introduction", "background", "motivation", "问题与需求")),
+    ("results", ("结果", "实验", "评估", "验证", "result", "experiment", "evaluation", "ablation")),
+    ("conclusion", ("结论", "总结", "展望", "conclusion", "summary", "future work")),
+]
+
+# Rubric slots that carry a talk. Weight feeds Section.weight, which the budget
+# allocator turns into speaking time -- innovation gets the most because that is
+# what a review panel scores.
+_RUBRIC_WEIGHTS = {
+    "innovation": 2.0,
+    "methods": 1.6,
+    "objectives": 1.4,
+    "results": 1.4,
+    "motivation": 1.2,
+    "prior_work": 0.9,
+    "feasibility": 0.8,
+    "conclusion": 0.8,
+    "schedule": 0.6,
+    "risks": 0.6,
+    "budget": 0.5,
+}
+
+# Sections that a talk keeps but does not present: shown only if asked.
+_BACKUP_RUBRICS = frozenset({"budget"})
+
+# --------------------------------------------------------------------------- #
+# Importance signals
+# --------------------------------------------------------------------------- #
+
+# Phrases that mark a sentence as a claim rather than exposition. A claim is what
+# an audience needs on screen.
+_CLAIM_MARKERS = (
+    "本项目", "本文", "我们提出", "首次", "创新", "关键", "核心", "显著", "突破",
+    "拟解决", "目标是", "贡献", "提出了", "实现了", "证明", "验证",
+    "we propose", "we present", "first", "novel", "key", "core", "significant",
+    "outperform", "state of the art", "state-of-the-art", "contribution",
+)
+# Hedging and elaboration: true but not slide material.
+_ELABORATION_MARKERS = (
+    "例如", "此外", "另外", "值得注意", "换言之", "也就是说", "具体而言", "众所周知",
+    "一般而言", "通常", "在此基础上", "为此", "因此我们", "详见", "如前所述",
+    "for example", "for instance", "moreover", "furthermore", "in addition",
+    "note that", "in other words", "specifically", "as mentioned",
+)
+# Anchor placeholders emitted by the parsers to carry an offset for a float.
+_PLACEHOLDER_RE = re.compile(r"^\s*\[(?:figure|table|表格|图)\b|^\s*\[[a-z]+-\d+\]\s*$", re.I)
+
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:%|个百分点|倍|万|亿|k|M|B|x|×)?")
+_MEASURED_RE = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:%|个百分点|倍|x|×)|"
+    r"(?:提升|降低|减少|提高|下降|加速|超过|达到|improv|reduc|increas|decreas|outperform)"
+)
+
+
+def plan_deck(
+    doc: ParsedDocument,
+    *,
+    total_seconds: int,
+    density: Density = Density.BALANCED,
+    scenario: Scenario = Scenario.GRANT_DEFENSE,
+    presenter: str | None = None,
+    affiliation: str | None = None,
+    venue: str | None = None,
+    max_bullets_per_slide: int = 5,
+) -> Deck:
+    """Build a :class:`Deck` from a parsed manuscript.
+
+    The deck comes back structurally complete and fully sourced, but with word
+    budgets unassigned: call :func:`rostrum.budget.allocate` after binding a
+    template, since budgeting needs the chosen layout's real capacity.
+    """
+    groups = _group_by_heading(doc.segments)
+    front, groups = _split_front_matter(groups, doc)
+    assets = _build_assets(doc)
+
+    sections: list[Section] = []
+    for group in groups:
+        section = _build_section(
+            group,
+            doc,
+            assets,
+            max_bullets_per_slide=max_bullets_per_slide,
+            density=density,
+        )
+        if section is not None:
+            sections.append(section)
+
+    sections = _order_sections(sections, scenario)
+
+    deck = Deck(
+        meta=DeckMeta(
+            title=doc.title or "未命名报告",
+            presenter=presenter or (doc.authors[0] if doc.authors else None),
+            affiliation=affiliation or front.get("affiliation"),
+            venue=venue,
+            language=doc.language if doc.language in ("zh", "en") else "mixed",
+            scenario=scenario,
+        ),
+        delivery=DeliveryPlan(total_seconds=total_seconds, density=density),
+        sections=sections,
+        assets=assets,
+        sources=[doc.to_source_document()],
+        rubric_profile=scenario.value if scenario is Scenario.GRANT_DEFENSE else None,
+    )
+    return deck
+
+
+# --------------------------------------------------------------------------- #
+# Grouping
+# --------------------------------------------------------------------------- #
+
+
+def _group_by_heading(segments: list[Segment]) -> list[dict]:
+    """Split the segment stream at top-level headings.
+
+    Deeper headings stay inside their parent group and become slide boundaries
+    rather than section boundaries, because a subsection is usually one slide's
+    worth of material.
+    """
+    groups: list[dict] = []
+    current: dict | None = None
+
+    for seg in segments:
+        if seg.kind is SegmentKind.HEADING and seg.level <= 1:
+            current = {"title": seg.text, "heading": seg, "body": []}
+            groups.append(current)
+            continue
+        if current is None:
+            # Front matter before any heading: title block, authors, abstract.
+            current = {"title": "", "heading": None, "body": []}
+            groups.append(current)
+        current["body"].append(seg)
+
+    # A document whose headings are all level 2 (common when Word styles were
+    # applied loosely) would otherwise collapse into one group.
+    if len([g for g in groups if g["heading"] is not None]) <= 1:
+        promoted = _regroup_at_level(segments, 2)
+        if len(promoted) > len(groups):
+            return promoted
+    return groups
+
+
+def _regroup_at_level(segments: list[Segment], level: int) -> list[dict]:
+    groups: list[dict] = []
+    current: dict | None = None
+    for seg in segments:
+        if seg.kind is SegmentKind.HEADING and seg.level <= level:
+            current = {"title": seg.text, "heading": seg, "body": []}
+            groups.append(current)
+            continue
+        if current is None:
+            current = {"title": "", "heading": None, "body": []}
+            groups.append(current)
+        current["body"].append(seg)
+    return groups
+
+
+def _split_front_matter(
+    groups: list[dict], doc: ParsedDocument
+) -> tuple[dict, list[dict]]:
+    """Peel off the title block so it does not become a content section.
+
+    A manuscript opens with its title, authors and affiliation. Those are cover
+    metadata, not a section of the talk -- treating them as content produced a
+    slide reading "Zhang Mou, Li Mou, Some University" in the first run.
+
+    The group is only removed when it looks like a title block: it must be the
+    first group, and either carry no heading or carry a heading equal to the
+    document title.
+    """
+    if not groups:
+        return {}, groups
+
+    first = groups[0]
+    heading = first.get("heading")
+    is_title_block = heading is None or (
+        doc.title is not None and heading.text.strip() == doc.title.strip()
+    )
+    if not is_title_block:
+        return {}, groups
+
+    body = first.get("body", [])
+    # Guard: if the block carries substantial prose it is a real introduction
+    # written without a heading, and must be kept.
+    prose = [
+        seg
+        for seg in body
+        if seg.kind is SegmentKind.PARAGRAPH and len(seg.text) > 80
+    ]
+    if prose:
+        return {}, groups
+
+    front: dict = {}
+    for seg in body:
+        text = seg.text.strip()
+        if not text:
+            continue
+        if _AFFILIATION_RE.search(text):
+            front["affiliation"] = _affiliation_of(text)
+            break
+    return front, groups[1:]
+
+
+def _affiliation_of(line: str) -> str:
+    """Extract the institution from a byline like "A, B  Some University".
+
+    Cutting at the institutional keyword would yield "大学计算机学院" and drop the
+    institution's actual name, so the cut is made at the boundary *before* it.
+
+    Whitespace width cannot be relied on: normalisation folds the ideographic
+    space that Chinese bylines use into an ordinary one, so a byline separated by
+    a full-width space reaches this function separated by a single ordinary one.
+    The boundary is therefore found by scanning back from the keyword to the last
+    separator or author-name break.
+    """
+    match = _AFFILIATION_RE.search(line)
+    if match is None:
+        return line.strip()
+
+    prefix = line[: match.start()]
+    cut = 0
+    for sep in ("\u3000", "  ", "，", ",", "；", ";", "、"):
+        idx = prefix.rfind(sep)
+        if idx >= 0:
+            cut = max(cut, idx + len(sep))
+
+    # After a comma-separated author list the final name may still be attached
+    # ("李四 某大学..."), so also break at the last space before the keyword.
+    #
+    # This applies to CJK bylines only. In English the keyword is a *word* of the
+    # institution's name rather than its start ("Tsinghua University"), so
+    # breaking at the preceding space would leave just "University".
+    tail = line[cut:]
+    keyword_start = match.start() - cut
+    if not _is_latin(line[match.start() : match.end()]):
+        space = tail.rfind(" ", 0, keyword_start)
+        if space >= 0 and len(tail[:space].strip()) <= 8:
+            cut += space + 1
+
+    return line[cut:].strip() or line.strip()
+
+
+def _is_latin(text: str) -> bool:
+    return bool(text) and all(ord(c) < 0x2E80 for c in text)
+
+
+# Institutional markers, used only to recognise a title block's affiliation line.
+_AFFILIATION_RE = re.compile(
+    r"大学|学院|研究院|研究所|实验室|医院|中心|公司|"
+    r"universit|institute|laborator|college|school|academy|hospital",
+    re.IGNORECASE,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Section construction
+# --------------------------------------------------------------------------- #
+
+
+def _build_section(
+    group: dict,
+    doc: ParsedDocument,
+    assets: list[Asset],
+    *,
+    max_bullets_per_slide: int,
+    density: Density,
+) -> Section | None:
+    body: list[Segment] = [
+        s for s in group["body"] if s.kind not in (SegmentKind.REFERENCE,)
+    ]
+    if not body and not group["title"]:
+        return None
+
+    rubric = _rubric_for(group["title"])
+    weight = _RUBRIC_WEIGHTS.get(rubric or "", 1.0)
+
+    slides = _build_slides(
+        group["title"] or (doc.title or "概述"),
+        body,
+        doc,
+        assets,
+        rubric=rubric,
+        max_bullets_per_slide=max_bullets_per_slide,
+        density=density,
+    )
+    if not slides:
+        return None
+
+    if rubric in _BACKUP_RUBRICS:
+        for slide in slides:
+            slide.is_backup = True
+
+    return Section(
+        title=group["title"] or (doc.title or "概述"),
+        slides=slides,
+        weight=weight,
+        rubric_key=rubric,
+    )
+
+
+def _build_slides(
+    section_title: str,
+    body: list[Segment],
+    doc: ParsedDocument,
+    assets: list[Asset],
+    *,
+    rubric: str | None,
+    max_bullets_per_slide: int,
+    density: Density,
+) -> list[Slide]:
+    """Chunk a section's segments into slides.
+
+    Boundaries come from three signals, in priority order: a subheading, a figure
+    or table (which anchors its own slide), and the bullet cap. The cap matters
+    because a slide with nine bullets is unreadable regardless of budget.
+    """
+    slides: list[Slide] = []
+    pending: list[Segment] = []
+    float_pending: list[Segment] = []
+    current_title = section_title
+
+    cap = {Density.SPARSE: 4, Density.BALANCED: max_bullets_per_slide,
+           Density.COMPACT: max_bullets_per_slide + 2}[density]
+
+    def flush(title: str) -> None:
+        nonlocal pending
+        if not pending:
+            return
+        slides.append(_make_slide(title, pending, doc, assets, rubric=rubric))
+        pending = []
+
+    def _emit_float(group: list[Segment]) -> None:
+        """Emit a float slide, titled from its caption."""
+        caption = next(
+            (g for g in group if g.kind is SegmentKind.CAPTION), None
+        )
+        title = _caption_title(caption, current_title) if caption else current_title
+        slides.append(_make_slide(title, group, doc, assets, rubric=rubric))
+
+    for seg in body:
+        if seg.kind is SegmentKind.HEADING:
+            flush(current_title)
+            current_title = seg.text
+            continue
+
+        # A float and its caption belong on the same slide. They arrive as two
+        # segments (anchor plus caption), so the anchor is held and the caption
+        # merged into it -- emitting each separately would split one figure
+        # across two slides, which is what the first run of this planner did.
+        if seg.kind is SegmentKind.TABLE or seg.asset_id:
+            if float_pending and _same_asset(float_pending, seg):
+                float_pending.append(seg)
+                continue
+            if float_pending:
+                _emit_float(float_pending)
+            flush(current_title)
+            float_pending = [seg]
+            continue
+
+        if float_pending:
+            _emit_float(float_pending)
+            float_pending = []
+
+        pending.append(seg)
+        if _slide_worthy_count(pending) >= cap:
+            flush(current_title)
+
+    if float_pending:
+        _emit_float(float_pending)
+    flush(current_title)
+    return [s for s in slides if s.blocks]
+
+
+def _make_slide(
+    title: str,
+    segments: list[Segment],
+    doc: ParsedDocument,
+    assets: list[Asset],
+    *,
+    rubric: str | None,
+) -> Slide:
+    blocks: list[Block] = []
+    asset_lookup = {getattr(a, "_ingest_id", a.uid): a for a in assets}
+    by_asset: dict[str, Block] = {}
+
+    for seg in segments:
+        block = _segment_to_block(seg, doc, asset_lookup, rubric=rubric)
+        if block is None:
+            continue
+        # An asset arrives as two segments (anchor plus caption) and must yield
+        # one block. The later segment contributes whatever the earlier lacked:
+        # its visible caption text and its extra source span.
+        if block.asset_ref:
+            existing = by_asset.get(block.asset_ref)
+            if existing is not None:
+                _merge_asset_block(existing, block)
+                continue
+            by_asset[block.asset_ref] = block
+        blocks.append(block)
+
+    role = _infer_role(blocks)
+    return Slide(role=role, title=_tidy_title(title), blocks=blocks)
+
+
+
+def _merge_asset_block(target: Block, extra: Block) -> None:
+    """Fold a second segment of the same asset into its existing block."""
+    if not target.content and extra.content:
+        target.content = extra.content
+    for span in extra.spans:
+        if span not in target.spans:
+            target.spans.append(span)
+    target.importance = max(target.importance, extra.importance)
+
+
+def _same_asset(group: list[Segment], seg: Segment) -> bool:
+    """Whether ``seg`` belongs to the float already being accumulated."""
+    ids = {g.asset_id for g in group if g.asset_id}
+    return bool(seg.asset_id and seg.asset_id in ids)
+
+
+def _bump(score: float, delta: float) -> float:
+    """Adjust an importance score, keeping it inside the IR's [0, 1] bound.
+
+    The IR enforces the range, so every adjustment must clamp: an unclamped
+    "+0.15 because it is a figure" on an already-high score is a validation
+    error, which is exactly how this was caught.
+    """
+    return max(0.05, min(1.0, round(score + delta, 3)))
+
+
+def _segment_to_block(
+    seg: Segment,
+    doc: ParsedDocument,
+    asset_lookup: dict,
+    *,
+    rubric: str | None,
+) -> Block | None:
+    span = seg.span(doc.doc_id)
+
+    if seg.asset_id:
+        asset_uid = _asset_uid(seg.asset_id, asset_lookup)
+        if asset_uid:
+            kind = (
+                BlockType.TABLE
+                if seg.kind is SegmentKind.TABLE or seg.asset_id.startswith("tbl")
+                else BlockType.FIGURE
+            )
+            # Only a real caption becomes visible text. The anchor segment's
+            # placeholder ("[Figure 1]", "[表格 3x4]") exists to hold a source
+            # offset, and must never reach a slide.
+            visible = seg.text if seg.kind is SegmentKind.CAPTION else ""
+            if _PLACEHOLDER_RE.match(visible):
+                visible = ""
+            return Block(
+                type=kind,
+                content=visible,
+                asset_ref=asset_uid,
+                derivation=Derivation.VERBATIM,
+                spans=[span],
+                importance=_bump(_score(seg, rubric), 0.15),  # visuals earn it
+                channel=Channel.SLIDE,
+            )
+
+    if seg.kind is SegmentKind.EQUATION:
+        return Block(
+            type=BlockType.EQUATION,
+            content=seg.text,
+            derivation=Derivation.VERBATIM,
+            spans=[span],
+            importance=_bump(_score(seg, rubric), 0.1),
+            channel=Channel.SLIDE,
+        )
+
+    if seg.kind is SegmentKind.CODE:
+        return Block(
+            type=BlockType.CODE,
+            content=seg.text,
+            derivation=Derivation.VERBATIM,
+            spans=[span],
+            importance=_score(seg, rubric),
+            channel=Channel.SLIDE,
+        )
+
+    if seg.kind is SegmentKind.QUOTE:
+        return Block(
+            type=BlockType.QUOTE,
+            content=seg.text,
+            derivation=Derivation.VERBATIM,
+            spans=[span],
+            importance=_score(seg, rubric),
+            channel=Channel.SLIDE,
+        )
+
+    if seg.kind in (SegmentKind.PARAGRAPH, SegmentKind.LIST_ITEM, SegmentKind.CAPTION):
+        importance = _score(seg, rubric)
+        headline, note = _split_claim(seg.text)
+        # A long paragraph is not slide text. The lead clause goes up; the rest
+        # becomes what the presenter says, so no content is lost.
+        derivation = (
+            Derivation.VERBATIM if headline == seg.text else Derivation.COMPRESSED
+        )
+        return Block(
+            type=BlockType.BULLET,
+            content=headline,
+            level=min(seg.level, 2),
+            derivation=derivation,
+            spans=[span],
+            importance=importance,
+            channel=Channel.SLIDE if importance >= 0.35 else Channel.SCRIPT,
+            speaker_note=note,
+        )
+
+    return None
+
+
+def _asset_uid(source_id: str, asset_lookup: dict) -> str | None:
+    asset = asset_lookup.get(source_id)
+    return asset.uid if asset is not None else None
+
+
+# --------------------------------------------------------------------------- #
+# Scoring
+# --------------------------------------------------------------------------- #
+
+
+def _score(seg: Segment, rubric: str | None) -> float:
+    """Importance in ``[0, 1]``, driving both channel and word budget.
+
+    The signals are deliberately explainable rather than learned, because a user
+    who disagrees with a decision needs to be able to see why it was made -- and
+    override it with a patch.
+    """
+    text = seg.text
+    score = 0.45
+
+    # Structural position: a section's opening sentence usually states its point.
+    if seg.kind is SegmentKind.LIST_ITEM:
+        score += 0.12  # the author already chose to itemise it
+    if seg.kind is SegmentKind.CAPTION:
+        score += 0.05
+
+    lowered = text.lower()
+    if any(m in text or m in lowered for m in _CLAIM_MARKERS):
+        score += 0.22
+    if any(m in text or m in lowered for m in _ELABORATION_MARKERS):
+        score -= 0.18
+
+    # Measured results are the most defensible thing on a slide.
+    if _MEASURED_RE.search(text):
+        score += 0.15
+    elif _NUMBER_RE.search(text):
+        score += 0.05
+
+    # Very long prose is exposition; very short lines are usually labels.
+    length = len(text)
+    if length > 220:
+        score -= 0.12
+    elif length < 12:
+        score -= 0.08
+
+    # Rubric slots that a panel scores get a lift, so scarce time goes there.
+    if rubric in ("innovation", "objectives", "results"):
+        score += 0.1
+    elif rubric in ("budget", "schedule"):
+        score -= 0.05
+
+    return max(0.05, min(1.0, round(score, 3)))
+
+
+def _split_claim(text: str) -> tuple[str, str | None]:
+    """Split a paragraph into a slide headline and a spoken remainder.
+
+    The cut is made at a sentence boundary, never mid-sentence, so the headline
+    stays a truthful quotation of the author rather than a mangled fragment.
+    """
+    sentences = _sentences(text)
+    if len(sentences) <= 1:
+        return text, None
+
+    head = sentences[0].strip()
+    rest = "".join(sentences[1:]).strip()
+
+    # A short single-sentence line needs no split, but a short *multi*-sentence
+    # paragraph still does: the second sentence is nearly always the elaboration
+    # ("...下降。这主要是因为表征坍缩"), which belongs in the presenter's mouth
+    # rather than on the slide. Length alone was the wrong test.
+    if len(text) <= 30:
+        return text, None
+
+    # If the first sentence is itself too long to be a bullet, keep it whole
+    # anyway: the budget allocator will compress it with real knowledge of the
+    # template's capacity, which this function does not have.
+    return head, rest or None
+
+
+def _sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[。！？；.!?])\s*", text)
+    return [p for p in parts if p.strip()]
+
+
+def _slide_worthy_count(segments: list[Segment]) -> int:
+    return sum(
+        1
+        for s in segments
+        if s.kind in (SegmentKind.PARAGRAPH, SegmentKind.LIST_ITEM)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Roles and ordering
+# --------------------------------------------------------------------------- #
+
+
+def _infer_role(blocks: list[Block]) -> SlideRole:
+    has_figure = any(b.type is BlockType.FIGURE for b in blocks)
+    has_table = any(b.type is BlockType.TABLE for b in blocks)
+    has_equation = any(b.type is BlockType.EQUATION for b in blocks)
+    text_blocks = [
+        b for b in blocks if b.type is BlockType.BULLET and b.channel is Channel.SLIDE
+    ]
+
+    if has_table:
+        return SlideRole.TABLE
+    if has_figure:
+        return SlideRole.TEXT_FIGURE if text_blocks else SlideRole.BIG_FIGURE
+    if has_equation:
+        return SlideRole.EQUATION
+    return SlideRole.TEXT_DENSE
+
+
+def _order_sections(sections: list[Section], scenario: Scenario) -> list[Section]:
+    """Reorder sections into the sequence a panel expects.
+
+    Authors write in manuscript order, which is not talk order: a proposal's
+    budget section belongs at the end, and innovation belongs early enough to
+    frame everything that follows. Sections without a recognised rubric keep
+    their relative position.
+    """
+    if scenario is not Scenario.GRANT_DEFENSE:
+        return sections
+
+    order = [
+        "motivation", "objectives", "innovation", "methods", "prior_work",
+        "results", "feasibility", "schedule", "risks", "budget", "conclusion",
+    ]
+    rank = {key: i for i, key in enumerate(order)}
+
+    decorated = []
+    for i, section in enumerate(sections):
+        key = section.rubric_key
+        # Unrecognised sections sort by their original position, interleaved at
+        # the midpoint so they are neither all hoisted nor all buried.
+        decorated.append((rank.get(key, len(order) // 2), i, section))
+    decorated.sort(key=lambda t: (t[0], t[1]))
+    return [s for _, _, s in decorated]
+
+
+def _rubric_for(title: str) -> str | None:
+    if not title:
+        return None
+    lowered = title.lower()
+    for key, patterns in _RUBRIC_PATTERNS:
+        if any(p in title or p in lowered for p in patterns):
+            return key
+    return None
+
+
+def _caption_title(seg: Segment, fallback: str) -> str:
+    """Use a float's caption as its slide title, stripped of the label."""
+    if seg.kind is SegmentKind.CAPTION or seg.text:
+        cleaned = re.sub(
+            r"^\s*(figure|fig\.?|table|tab\.?|图|表)\s*[0-9一二三四五六七八九十]*\s*[.:：、]?\s*",
+            "",
+            seg.text,
+            flags=re.IGNORECASE,
+        ).strip()
+        if 2 <= len(cleaned) <= 40:
+            return cleaned
+    return fallback
+
+
+def _tidy_title(title: str) -> str:
+    title = re.sub(r"^\s*\d+(?:\.\d+)*\s*[.、]?\s*", "", title).strip()
+    return title or "内容"
+
+
+# --------------------------------------------------------------------------- #
+# Assets
+# --------------------------------------------------------------------------- #
+
+
+def _build_assets(doc: ParsedDocument) -> list[Asset]:
+    """Convert extracted assets to IR assets, tagging origin honestly."""
+    out: list[Asset] = []
+    for extracted in doc.assets:
+        asset = Asset(
+            kind=extracted.kind,
+            origin=AssetOrigin.EXTRACTED,  # from the author's own manuscript
+            path=extracted.path,
+            latex=extracted.latex,
+            data=extracted.data,
+            caption=extracted.caption,
+            source_label=extracted.source_label,
+            spans=list(extracted.spans),
+            intrinsic_aspect=extracted.intrinsic_aspect,
+        )
+        # Remember the ingest-side id so blocks can resolve their asset_ref.
+        object.__setattr__(asset, "_ingest_id", extracted.asset_id)
+        out.append(asset)
+    return out
