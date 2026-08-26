@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
     BaseModel,
@@ -628,9 +628,35 @@ class Deck(IRModel):
     def slide_count(self) -> int:
         return sum(len(s.slides) for s in self.sections)
 
+    #: Roles that structure a talk rather than carry its content. They occupy
+    #: seconds, not minutes, and must not count against the slide-count target:
+    #: including them made a well-sized deck report as 60% over budget.
+    NAVIGATION_ROLES: ClassVar[frozenset[SlideRole]] = frozenset(
+        {
+            SlideRole.COVER,
+            SlideRole.AGENDA,
+            SlideRole.SECTION,
+            SlideRole.ACKNOWLEDGEMENT,
+        }
+    )
+
     @property
     def content_slide_count(self) -> int:
-        """Slides that consume presentation time."""
+        """Slides that carry content, and so consume real presentation time.
+
+        Excludes backup slides and navigation slides. A cover and four dividers
+        are five pages that take about ten seconds in total; counting them
+        alongside content pages would make the pacing advice meaningless.
+        """
         return sum(
-            1 for _, slide in self.iter_slides() if not slide.is_backup
+            1
+            for _, slide in self.iter_slides()
+            if not slide.is_backup and slide.role not in self.NAVIGATION_ROLES
+        )
+
+    @property
+    def navigation_slide_count(self) -> int:
+        """Cover, agenda, dividers and closing slides."""
+        return sum(
+            1 for _, slide in self.iter_slides() if slide.role in self.NAVIGATION_ROLES
         )

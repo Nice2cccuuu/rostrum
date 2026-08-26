@@ -41,6 +41,7 @@ from rostrum.ir.nodes import (
     DeliveryPlan,
     Section,
     Slide,
+    SourceSpan,
 )
 
 # --------------------------------------------------------------------------- #
@@ -131,6 +132,13 @@ def plan_deck(
     """
     groups = _group_by_heading(doc.segments)
     front, groups = _split_front_matter(groups, doc)
+    # An agenda item is not authored from nothing: it names a heading the author
+    # wrote, so it can and must cite that heading's span.
+    heading_spans = {
+        g["title"]: g["heading"].span(doc.doc_id)
+        for g in groups
+        if g.get("heading") is not None and g.get("title")
+    }
     assets = _build_assets(doc)
 
     sections: list[Section] = []
@@ -146,6 +154,7 @@ def plan_deck(
             sections.append(section)
 
     sections = _order_sections(sections, scenario)
+    sections = _add_navigation(sections, doc, front, scenario, heading_spans)
 
     deck = Deck(
         meta=DeckMeta(
@@ -164,6 +173,113 @@ def plan_deck(
     )
     return deck
 
+
+# --------------------------------------------------------------------------- #
+# Navigation slides
+# --------------------------------------------------------------------------- #
+
+
+def _add_navigation(
+    sections: list[Section],
+    doc: ParsedDocument,
+    front: dict,
+    scenario: Scenario,
+    heading_spans: dict[str, SourceSpan] | None = None,
+) -> list[Section]:
+    """Prepend a cover and agenda, and give each section a divider.
+
+    A talk is not a stack of content pages. Without a cover the presenter has
+    nothing on screen while being introduced; without an agenda a review panel
+    cannot see the shape of what is coming; without dividers a twelve-slide deck
+    reads as one undifferentiated run. Rendering the deck and looking at it made
+    this obvious in a way that no unit test would have.
+
+    Cover and divider slides carry no manuscript text of their own. Agenda items
+    do: each names a heading the author wrote, so it cites that heading's span and
+    is marked ``VERBATIM`` rather than ``AUTHORED``. Claiming otherwise would put
+    unsourced text in a deck whose whole point is that every line is traceable --
+    which is what the provenance test caught when these slides were first added.
+
+    They cost almost no time, since the allocator weights by content mass.
+    """
+    if not sections:
+        return sections
+
+    cover = Slide(
+        role=SlideRole.COVER,
+        title=doc.title or "未命名报告",
+        subtitle=_cover_subtitle(doc, front),
+        blocks=[],
+        layout_hint=None,
+    )
+    front_section = Section(title="封面", slides=[cover], weight=0.15)
+
+    # An agenda listing the real section titles, in the order they will be given.
+    content_titles = [s.title for s in sections if not _all_backup(s)]
+    spans = heading_spans or {}
+    agenda_blocks = [
+        Block(
+            type=BlockType.BULLET,
+            content=title,
+            derivation=(
+                Derivation.VERBATIM if title in spans else Derivation.AUTHORED
+            ),
+            spans=[spans[title]] if title in spans else [],
+            importance=0.5,
+            channel=Channel.SLIDE,
+            pinned=True,  # an agenda item must not be demoted off its own page
+        )
+        for title in content_titles
+    ]
+    if len(agenda_blocks) >= 3:
+        front_section.slides.append(
+            Slide(role=SlideRole.AGENDA, title="汇报内容", blocks=agenda_blocks)
+        )
+
+    out = [front_section]
+    # Dividers earn their place only in a deck long enough to need them.
+    want_dividers = len(content_titles) >= 4 and scenario in (
+        Scenario.GRANT_DEFENSE,
+        Scenario.THESIS_DEFENSE,
+        Scenario.CONFERENCE_ORAL,
+    )
+    for section in sections:
+        if want_dividers and not _all_backup(section):
+            section.slides.insert(
+                0, Slide(role=SlideRole.SECTION, title=section.title, blocks=[])
+            )
+        out.append(section)
+
+    out.append(
+        Section(
+            title="致谢",
+            slides=[
+                Slide(
+                    role=SlideRole.ACKNOWLEDGEMENT,
+                    title="谢谢",
+                    subtitle="请各位专家批评指正",
+                    blocks=[],
+                )
+            ],
+            weight=0.15,
+        )
+    )
+    return out
+
+
+def _cover_subtitle(doc: ParsedDocument, front: dict) -> str | None:
+    """Presenter and affiliation, on one line, without repeating the title."""
+    parts = []
+    if doc.authors:
+        parts.append("、".join(doc.authors[:3]))
+    affiliation = front.get("affiliation")
+    if affiliation:
+        parts.append(affiliation)
+    return "\n".join(parts) if parts else None
+
+
+def _all_backup(section: Section) -> bool:
+    return bool(section.slides) and all(s.is_backup for s in section.slides)
 
 # --------------------------------------------------------------------------- #
 # Grouping

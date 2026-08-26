@@ -193,6 +193,11 @@ def allocate(
     return result
 
 
+# Relative time weight for a slide with no content blocks: a cover, divider or
+# closing page. Small but non-zero, since the presenter does speak over them.
+_NAVIGATION_MASS = 0.06
+
+
 def _slide_mass(slide: Slide) -> float:
     """Relative salience of a slide, used to weight its time share."""
     mass = 0.0
@@ -201,8 +206,13 @@ def _slide_mass(slide: Slide) -> float:
             continue
         w = _VISUAL_TIME_WEIGHT if block.is_visual else 1.0
         mass += max(block.importance, 0.05) * w
-    # A section divider still needs a beat, even with no blocks on it.
-    return mass or 0.25
+    # Navigation slides carry no content but still need a beat. A divider is
+    # spoken over in a couple of seconds ("now to the method"), so it must claim
+    # far less than a content slide -- the first build gave dividers 8-13s each,
+    # nearly a fifth of an eight-minute talk spent on signposting.
+    if not mass:
+        return _NAVIGATION_MASS
+    return mass
 
 
 def _allocate_within_slide(

@@ -17,6 +17,7 @@ Two consequences follow, and both are deliberate:
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 
 from rostrum.budget.allocate import count_units
@@ -125,6 +126,7 @@ def render_pptx(
 
         spec, native = layout_by_id[bound.layout_id]
         native_slide = prs.slides.add_slide(native)
+        _inherit_layout_appearance(native_slide, native)
         _write_slide(
             deck,
             slide,
@@ -144,6 +146,44 @@ def render_pptx(
 # --------------------------------------------------------------------------- #
 # Slide population
 # --------------------------------------------------------------------------- #
+
+
+def _inherit_layout_appearance(slide, layout) -> None:
+    """Reproduce the layout's own appearance on a slide built from it.
+
+    Two OOXML behaviours have to be handled together, and both were found by
+    rendering a deck and looking at it rather than by any check that passes or
+    fails:
+
+    1. ``showMasterSp`` does not inherit. A layout that hides master shapes has
+       no effect unless the slide repeats the declaration, so a cover came out
+       wearing the content pages' title rule.
+
+    2. A slide inherits its layout's *placeholders* but not its static shapes.
+       Setting ``showMasterSp="0"`` to fix (1) therefore also removed the
+       layout's own decoration -- the cover rule and the section stroke vanished
+       entirely. Those shapes must be copied onto the slide explicitly.
+
+    Copying is deliberate rather than clever: the shapes are flat rectangles, so
+    a deep copy of the XML is exact, and the result is a self-contained slide
+    that keeps its appearance if the template is later detached.
+    """
+    flag = layout._element.get("showMasterSp")
+    if flag is not None:
+        slide._element.set("showMasterSp", flag)
+
+    if flag != "0":
+        # Master shapes are visible, so the layout's own decoration will already
+        # be drawn beneath the slide by the consumer.
+        return
+
+    tree = slide.shapes._spTree
+    for shape in layout.shapes:
+        if shape.is_placeholder:
+            continue  # placeholders are inherited already
+        tree.insert_element_before(
+            copy.deepcopy(shape._element), "p:extLst"
+        )
 
 
 def _write_slide(

@@ -26,6 +26,8 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass, field
 
+from lxml import etree
+
 from rostrum.ir.enums import Renderer, SlideRole
 from rostrum.measure.text import (
     LINE_HEIGHT_CJK,
@@ -375,6 +377,7 @@ _NAME_HINTS: list[tuple[tuple[str, ...], list[SlideRole]]] = [
     (("timeline", "时间线", "计划"), [SlideRole.TIMELINE]),
     (("summary", "conclusion", "总结", "结论"), [SlideRole.SUMMARY]),
     (("thank", "acknowledg", "致谢", "感谢"), [SlideRole.ACKNOWLEDGEMENT]),
+    (("backup", "reserve", "备用", "附录", "appendix"), [SlideRole.BACKUP]),
     (("blank", "空白"), []),
 ]
 
@@ -449,18 +452,53 @@ def _augment(
 
 
 def _fonts_used(prs) -> set[str]:
-    """Fonts referenced by the master theme, for substitution warnings."""
+    """Fonts a template will actually render with, for substitution warnings.
+
+    Two sources, both needed. Shapes may name a face directly, but a
+    well-formed template instead references the theme (``+mj-lt`` / ``+mn-lt``)
+    and declares the real faces once in the theme part -- which is the correct
+    way to do it, and invisible to a scan of shape properties alone. Reading only
+    shapes reported no fonts at all for exactly such a template.
+    """
     found: set[str] = set()
     with contextlib.suppress(Exception):
         for master in prs.slide_masters:
             for ph in master.placeholders:
                 for para in ph.text_frame.paragraphs:
-                    if para.font.name:
+                    if para.font.name and not para.font.name.startswith("+"):
                         found.add(para.font.name)
                     for run in para.runs:
-                        if run.font.name:
+                        if run.font.name and not run.font.name.startswith("+"):
                             found.add(run.font.name)
+    found |= _theme_fonts(prs)
     return found
+
+
+def _theme_fonts(prs) -> set[str]:
+    """Faces declared in the theme's font scheme, including the CJK entries.
+
+    ``script="Hans"`` is what governs Chinese glyph selection, so it matters more
+    than the latin typeface for the decks this tool produces.
+    """
+    found: set[str] = set()
+    with contextlib.suppress(Exception):
+        part = prs.slide_masters[0].part.part_related_by(
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+        )
+        root = etree.fromstring(part.blob)
+        ns = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+        for scheme in ("majorFont", "minorFont"):
+            node = root.find(f".//a:fontScheme/a:{scheme}", ns)
+            if node is None:
+                continue
+            for tag in ("latin", "ea"):
+                el = node.find(f"a:{tag}", ns)
+                if el is not None and el.get("typeface"):
+                    found.add(el.get("typeface"))
+            for font in node.findall("a:font", ns):
+                if font.get("script") in ("Hans", "Hant") and font.get("typeface"):
+                    found.add(font.get("typeface"))
+    return {f for f in found if f and not f.startswith("+")}
 
 
 def _aspect_label(w_pt: float, h_pt: float) -> str:

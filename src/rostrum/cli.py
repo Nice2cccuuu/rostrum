@@ -14,14 +14,18 @@ visible immediately rather than at slide 14 of a rehearsal.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import pathlib
 import sys
+import tempfile
 
 from rostrum import __version__
 from rostrum.budget import allocate, estimate_duration
 from rostrum.ir import Deck, validate
 from rostrum.templates import bind, capacity_caps, ingest_pptx, title_overflows
+from rostrum.themes import DEFAULT_THEME_ID
 
 
 def _default_font() -> str | None:
@@ -197,6 +201,56 @@ def _parse_manuscript(path: str, *, language: str, minutes: float):
     return parse_latex(path, language=language)
 
 
+def cmd_themes(args: argparse.Namespace) -> int:
+    """List the built-in themes, or write one out as a .pptx."""
+    from rostrum.themes import build_template, contrast_ratio, get_theme, list_themes
+
+    if args.export:
+        theme = get_theme(args.export)
+        out = args.out or f"{theme.theme_id}.pptx"
+        build_template(theme, out)
+        print(f"wrote {out}")
+        print(
+            "edit it in PowerPoint and pass it back with --template to keep your "
+            "changes"
+        )
+        return 0
+
+    for theme in list_themes():
+        p = theme.palette
+        mark = "  (default)" if theme.theme_id == DEFAULT_THEME_ID else ""
+        print(f"{theme.theme_id}{mark}")
+        print(f"  {theme.name} - {theme.description}")
+        print(
+            f"  body {theme.type_scale.body:.0f}pt on #{p.background}, "
+            f"contrast {contrast_ratio(p.body, p.background):.1f}:1"
+        )
+        print()
+    print("export one with: rostrum themes --export <id>")
+    return 0
+
+
+def _resolve_template(args: argparse.Namespace) -> tuple[str, object | None]:
+    """Return the template path to use, building a built-in theme if needed.
+
+    A user who supplies no template gets a real designed one rather than
+    PowerPoint's blank default. The generated file is kept in a temporary
+    location and measured through the ordinary ingest path -- built-in themes get
+    no privileged treatment.
+    """
+    if getattr(args, "template", None):
+        return args.template, None
+
+    from rostrum.themes import build_template, get_theme
+
+    theme = get_theme(getattr(args, "theme", None) or DEFAULT_THEME_ID)
+    handle, scratch = tempfile.mkstemp(suffix=".pptx")
+    os.close(handle)
+    build_template(theme, scratch)
+    print(f"using built-in theme {theme.theme_id!r} ({theme.name})")
+    return scratch, scratch
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     from rostrum.ingest.planner import plan_deck
     from rostrum.ir.enums import Density, Scenario
@@ -282,9 +336,10 @@ def cmd_build(args: argparse.Namespace) -> int:
     print(f"wrote {deck_path}")
     print()
 
+    template_path, scratch = _resolve_template(args)
     render_args = argparse.Namespace(
         deck=str(deck_path),
-        template=args.template,
+        template=template_path,
         out=args.out,
         script=args.script,
         font=args.font,
@@ -292,7 +347,12 @@ def cmd_build(args: argparse.Namespace) -> int:
         force=args.force,
         no_backup=args.no_backup,
     )
-    return cmd_render(render_args)
+    try:
+        return cmd_render(render_args)
+    finally:
+        if scratch:
+            with contextlib.suppress(OSError):
+                os.unlink(scratch)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -355,9 +415,23 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--out", help="output deck IR path")
     g.set_defaults(func=cmd_ingest)
 
+    t = sub.add_parser("themes", help="list or export the built-in themes")
+    t.add_argument("--export", metavar="ID", help="write a theme out as .pptx")
+    t.add_argument("--out", help="output path for --export")
+    t.set_defaults(func=cmd_themes)
+
     b = sub.add_parser("build", help="manuscript straight to slides and script")
     b.add_argument("manuscript", help=".docx, .pdf or .tex")
-    b.add_argument("template", help=".pptx template")
+    b.add_argument(
+        "template",
+        nargs="?",
+        help=".pptx template; omit to use a built-in theme",
+    )
+    b.add_argument(
+        "--theme",
+        default=None,
+        help=f"built-in theme when no template is given (default: {DEFAULT_THEME_ID})",
+    )
     b.add_argument("--minutes", type=float, default=8.0)
     b.add_argument(
         "--density", default="balanced",
