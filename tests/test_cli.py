@@ -51,7 +51,7 @@ class TestHelpAndDiscovery:
         assert "duration" in out.lower() or "presentation" in out.lower()
 
     def test_every_subcommand_has_help(self):
-        code, out, _ = run("--help")
+        _, out, _ = run("--help")
         for command in (
             "ingest", "render", "beamer", "preview", "point", "edit", "build",
             "themes", "inspect",
@@ -91,7 +91,7 @@ class TestDocumentedWorkflow:
         assert deck.exists()
 
         pptx = tmp_path / "t.pptx"
-        code, out, err = run("render", str(deck), "--out", str(pptx))
+        code, _, err = run("render", str(deck), "--out", str(pptx))
         assert code == 0, err
         assert pptx.exists()
 
@@ -107,7 +107,7 @@ class TestDocumentedWorkflow:
 
     def test_build_produces_slides_and_a_script(self, tmp_path):
         pptx = tmp_path / "talk.pptx"
-        code, out, err = run(
+        code, _, err = run(
             "build", str(MANUSCRIPT), "--minutes", "8", "--out", str(pptx)
         )
         assert code == 0, err

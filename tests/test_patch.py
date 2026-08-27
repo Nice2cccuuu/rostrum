@@ -194,24 +194,45 @@ def test_containment_allows_the_parent_of_a_removed_block(deck):
 
 
 def test_rewrite_keeps_spans_and_marks_the_text_compressed(deck):
-    long_block = max(_body_blocks(deck), key=lambda b: len(b.content))
+    from rostrum.budget.allocate import count_units
+
+    # Shortening cuts only at a clause boundary, so the target must *have* one.
+    # Picking "the longest block" no longer guarantees that: the planner now
+    # splits long paragraphs into single-clause points, which is the desired
+    # outcome and leaves nothing multi-clause behind. So the test supplies its own
+    # target instead of depending on what planning happens to leave.
+    # Not a pinned block: pinning exempts content from automatic modification by
+    # design, so a pinned target makes shortening a legitimate no-op.
+    candidates = [b for b in _body_blocks(deck) if not b.pinned]
+    assert candidates, "fixture has no unpinned bullet"
+    long_block = candidates[0]
+    long_block.content = (
+        "深度表征学习在大规模标注数据上取得了显著成功，"
+        "但在医学影像等真实场景中获取标注的成本极高。"
+    )
     spans_before = len(long_block.spans)
+    limit = max(8, count_units(long_block.content) // 2)
+    original = long_block.content
 
     patch = Patch(
         patch_id="p",
-        operations=[Rewrite(target=long_block.uid, instruction="短一些", max_units=25)],
+        operations=[
+            Rewrite(target=long_block.uid, instruction="短一些", max_units=limit)
+        ],
     )
     after, _ = apply_patch(deck, patch)
     edited = after.find(long_block.uid)
 
-    assert len(edited.content) < len(long_block.content)
+    assert count_units(edited.content) < count_units(original)
     assert len(edited.spans) == spans_before, "shortening must not drop the source"
     assert edited.derivation is Derivation.COMPRESSED
 
 
 def test_rewrite_never_cuts_mid_phrase(deck):
     """A bullet ending in half a clause reads as a bug to the audience."""
-    long_block = max(_body_blocks(deck), key=lambda b: len(b.content))
+    from rostrum.budget.allocate import count_units
+
+    long_block = max(_body_blocks(deck), key=lambda b: count_units(b.content))
     patch = Patch(
         patch_id="p",
         operations=[Rewrite(target=long_block.uid, instruction="短", max_units=20)],

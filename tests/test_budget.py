@@ -153,9 +153,13 @@ class TestDistribution:
         deck = deck_of(n_slides=1, blocks_per_slide=0, density=Density.COMPACT)
         slide = deck.sections[0].slides[0]
         lo, hi = bullet("minor", 0.3), bullet("major", 0.95)
-        # Enough blocks that the page budget, not the per-bullet cap, binds.
+        # Enough blocks that the page budget, not the per-bullet cap, binds. The
+        # count has to exceed max_bullets_per_slide: at or below it, every block
+        # can be given the full per-bullet cap and importance stops
+        # differentiating -- which is correct behaviour, not the property under
+        # test here.
         slide.blocks.extend([lo, hi])
-        slide.blocks.extend(bullet(f"other{i}", 0.5) for i in range(7))
+        slide.blocks.extend(bullet(f"other{i}", 0.5) for i in range(14))
         allocate(deck)
         assert hi.word_budget > lo.word_budget
 

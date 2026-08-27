@@ -27,7 +27,16 @@ class DensityProfile:
     """Cap on the rendered length of a single bullet."""
 
     max_units_per_slide: int
-    """Cap on total slide-channel text on a page."""
+    """Cap on total slide-channel text on a page.
+
+    Must be at least ``max_bullets_per_slide * max_units_per_bullet``, or the two
+    limits contradict each other: filling a page to the bullet count necessarily
+    breaks the page total, and the planner ends up splitting pages it has just
+    been told are legal. All three profiles were originally inconsistent this way
+    -- sparse allowed 4 bullets of 18 units, which is 72, against a page cap of 60
+    -- and the visible result was single-bullet slides that could not be merged
+    back together.
+    """
 
     script_ratio: float
     """Share of spoken content expected to live only in the script. Sparse
@@ -51,7 +60,8 @@ _PROFILES: dict[Density, DensityProfile] = {
     Density.SPARSE: DensityProfile(
         max_bullets_per_slide=4,
         max_units_per_bullet=18,
-        max_units_per_slide=60,
+        # 4 x 18 = 72. Anything less contradicts the bullet limits above.
+        max_units_per_slide=72,
         script_ratio=0.70,
         demote_below_importance=0.55,
         max_bullet_level=1,
@@ -60,7 +70,7 @@ _PROFILES: dict[Density, DensityProfile] = {
     Density.BALANCED: DensityProfile(
         max_bullets_per_slide=6,
         max_units_per_bullet=28,
-        max_units_per_slide=140,
+        max_units_per_slide=168,  # 6 x 28
         script_ratio=0.45,
         demote_below_importance=0.35,
         max_bullet_level=2,
@@ -71,7 +81,7 @@ _PROFILES: dict[Density, DensityProfile] = {
     Density.COMPACT: DensityProfile(
         max_bullets_per_slide=9,
         max_units_per_bullet=42,
-        max_units_per_slide=260,
+        max_units_per_slide=378,  # 9 x 42
         script_ratio=0.20,
         demote_below_importance=0.18,
         max_bullet_level=3,
@@ -92,3 +102,25 @@ def default_words_per_minute(language: str) -> int:
     figures differ so much.
     """
     return {"zh": 210, "en": 140, "mixed": 180}.get(language, 180)
+
+
+def _assert_profiles_are_consistent() -> None:
+    """Fail at import time if a profile's limits contradict each other.
+
+    Cheap insurance against a class of bug that is invisible in the numbers and
+    obvious only in the output: a page cap below ``bullets x units`` makes the
+    planner split pages that its own bullet limits permit, producing slides with
+    one line on them.
+    """
+    for density, profile in _PROFILES.items():
+        implied = profile.max_bullets_per_slide * profile.max_units_per_bullet
+        if profile.max_units_per_slide < implied:
+            raise ValueError(
+                f"density profile {density.value!r} is self-contradictory: "
+                f"{profile.max_bullets_per_slide} bullets of "
+                f"{profile.max_units_per_bullet} units implies {implied}, but "
+                f"max_units_per_slide is {profile.max_units_per_slide}"
+            )
+
+
+_assert_profiles_are_consistent()

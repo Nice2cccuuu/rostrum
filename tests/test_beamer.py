@@ -576,10 +576,15 @@ class TestCompilation:
             target.blocks.append(
                 Block(
                     type=BlockType.BULLET,
-                    content=f"第{i + 1}条补充内容：" + "表征坍缩导致性能下降。" * 2,
+                    content=f"第{i + 1}条补充内容：" + "表征坍缩导致性能下降。" * 3,
                     derivation=Derivation.AUTHORED,
                     spans=[],
                     importance=0.2 + i * 0.05,
+                    # Pinned so planning cannot absorb it: the planner now splits
+                    # long prose into short points, which legitimately stops this
+                    # much text from overflowing at all. The test needs an overflow
+                    # to exist before it can assert how one is repaired.
+                    pinned=True,
                 )
             )
         before = [b.channel for b in target.blocks]
@@ -604,10 +609,11 @@ class TestCompilation:
             target.blocks.append(
                 Block(
                     type=BlockType.BULLET,
-                    content=f"独特标记{i}：" + "表征坍缩导致下游性能下降。" * 2,
+                    content=f"独特标记{i}：" + "表征坍缩导致下游性能下降。" * 3,
                     derivation=Derivation.AUTHORED,
                     spans=[],
                     importance=0.2 + i * 0.05,
+                    pinned=True,
                 )
             )
         tex = tmp_path / "over.tex"

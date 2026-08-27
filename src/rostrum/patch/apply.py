@@ -369,7 +369,24 @@ def _h_rewrite(deck: Deck, op: Rewrite, report: ApplyReport, _cap) -> None:
     original = block.content
 
     if limit and limit > 0:
-        block.content = _shorten_to(original, limit)
+        shortened = _shorten_to(original, limit)
+        if shortened == original:
+            # Trimming gives up when the opening clause already exceeds the limit,
+            # because there is no cut point before it. Splitting succeeds where
+            # trimming cannot: the first point goes on the slide and the rest joins
+            # the speaker note, so the content is preserved and the bullet fits.
+            from rostrum.ingest.pointize import head_and_tail
+
+            head, tail = head_and_tail(original, limit=limit)
+            if head != original:
+                shortened = head
+                if tail:
+                    block.speaker_note = (
+                        f"{tail} {block.speaker_note}".strip()
+                        if block.speaker_note
+                        else tail
+                    )
+        block.content = shortened
     else:
         # No budget given: drop trailing subordinate clauses, which is what
         # "make it shorter" almost always means for a bullet.

@@ -16,6 +16,7 @@ operation rather than a re-generation.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from rostrum.budget.density import DensityProfile, profile_for
@@ -245,7 +246,50 @@ def allocate(
         )
 
     _warn_about_long_slides(deck, result)
+    _warn_about_thin_slides(deck, result)
     return result
+
+
+def _warn_about_thin_slides(deck: Deck, result: BudgetPlan) -> None:
+    """Report content slides carrying a single bullet and no visual.
+
+    Reported rather than fixed, and the distinction is deliberate. A one-point
+    slide is sometimes exactly right -- a defence panel reads "可行性分析" as its own
+    beat, and merging it into "研究基础" would blur two rubrics reviewers score
+    separately. But a run of them means the manuscript had one sentence per
+    heading, and the presenter should know that before they stand up.
+
+    Merging across headings is the user's call, which is why this is a note. An
+    earlier instinct to merge them automatically would have destroyed the rubric
+    structure that makes a grant deck legible to its audience.
+    """
+    thin: list[str] = []
+    for _, slide in deck.iter_slides():
+        if slide.is_backup or slide.role in Deck.NAVIGATION_ROLES:
+            continue
+        if any(b.is_visual for b in slide.blocks):
+            continue
+        on_slide = [
+            b
+            for b in slide.blocks
+            if b.channel is Channel.SLIDE and not b.is_visual and b.content.strip()
+        ]
+        if len(on_slide) == 1:
+            thin.append(slide.title or deck.path_of(slide.uid) or slide.uid)
+
+    if len(thin) >= _THIN_SLIDE_RUN:
+        listed = "、".join(f"'{t}'" for t in thin[:4])
+        more = f" 等 {len(thin)} 页" if len(thin) > 4 else ""
+        result.notes.append(
+            f"{listed}{more} 每页只有一个要点；若希望更紧凑，可考虑合并相邻小节，"
+            "或为这些小节补充内容"
+        )
+
+
+#: How many single-point slides constitute a pattern worth mentioning. One or two
+#: are a legitimate rhetorical choice; several in a row means the manuscript was
+#: thin and the deck inherited it.
+_THIN_SLIDE_RUN = 3
 
 
 # A single slide holding more than this share of the talk is a pacing problem
@@ -283,13 +327,30 @@ _NAVIGATION_MASS = 0.06
 
 
 def _slide_mass(slide: Slide) -> float:
-    """Relative salience of a slide, used to weight its time share."""
+    """Relative salience of a slide, used to weight its time share.
+
+    Salience combines *how much there is to say* with *how much it matters*.
+    Importance alone was the first approach and it distorted badly: a page of four
+    short, highly-rated blocks claimed 319 seconds of a 900-second talk -- 39% --
+    because four importances summed to more than a longer page's three. Nobody
+    spends six minutes on one equation and three one-line claims.
+
+    Text length enters as a square root rather than linearly. Speaking time does
+    grow with content, but a bullet twice as long is not twice as long to say: the
+    presenter reads the slide once and elaborates from the script either way.
+    """
     mass = 0.0
     for block in slide.blocks:
         if block.channel is Channel.DROP:
             continue
         w = _VISUAL_TIME_WEIGHT if block.is_visual else 1.0
-        mass += max(block.importance, 0.05) * w
+        spoken = count_units(block.content) + count_units(
+            block.speaker_note or ""
+        )
+        # A visual has little text but takes real time to talk through, so it
+        # gets a floor rather than being measured by its caption.
+        volume = math.sqrt(max(spoken, 6 if block.is_visual else 1))
+        mass += max(block.importance, 0.05) * w * volume
     # Navigation slides carry no content but still need a beat. A divider is
     # spoken over in a couple of seconds ("now to the method"), so it must claim
     # far less than a content slide -- the first build gave dividers 8-13s each,

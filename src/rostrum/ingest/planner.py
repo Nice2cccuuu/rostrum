@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import re
 
+from rostrum.budget.allocate import count_units
+from rostrum.budget.density import profile_for
 from rostrum.ingest.model import ParsedDocument, Segment, SegmentKind
+from rostrum.ingest.pointize import head_and_tail
 from rostrum.ir.enums import (
     AssetOrigin,
     BlockType,
@@ -589,14 +592,27 @@ def _build_slides(
     float_pending: list[Segment] = []
     current_title = section_title
 
-    cap = {Density.SPARSE: 4, Density.BALANCED: max_bullets_per_slide,
-           Density.COMPACT: max_bullets_per_slide + 2}[density]
+    # The caps come from the density profile rather than being re-derived here.
+    # A local ``{SPARSE: 4, ...}`` table was the original approach and it made
+    # density a no-op for page count: the numbers only ever acted as an upper
+    # bound, so a section with three paragraphs produced three-paragraph slides
+    # at every density. Sparse, balanced and compact all returned 13 pages with
+    # identical per-page counts.
+    profile = profile_for(density)
+    cap = profile.max_bullets_per_slide
+    units_cap = profile.max_units_per_slide
+    unit_limit = profile.max_units_per_bullet
 
     def flush(title: str) -> None:
         nonlocal pending
         if not pending:
             return
-        slides.append(_make_slide(title, pending, doc, assets, rubric=rubric))
+        slides.append(
+            _make_slide(
+                title, pending, doc, assets, rubric=rubric,
+                unit_limit=unit_limit,
+            )
+        )
         pending = []
 
     def _emit_float(group: list[Segment]) -> None:
@@ -605,7 +621,11 @@ def _build_slides(
             (g for g in group if g.kind is SegmentKind.CAPTION), None
         )
         title = _caption_title(caption, current_title) if caption else current_title
-        slides.append(_make_slide(title, group, doc, assets, rubric=rubric))
+        slides.append(
+            _make_slide(
+                title, group, doc, assets, rubric=rubric, unit_limit=unit_limit
+            )
+        )
 
     for seg in body:
         if seg.kind is SegmentKind.HEADING:
@@ -632,13 +652,92 @@ def _build_slides(
             float_pending = []
 
         pending.append(seg)
-        if _slide_worthy_count(pending) >= cap:
+        # Two independent reasons to break, checked on the units a slide will
+        # actually carry rather than on the segments fed in. Counting segments
+        # let a slide exceed its own cap, because one segment can yield a bullet
+        # plus a merged caption: a "sparse" deck with a cap of 4 produced a page
+        # of 5.
+        if _slide_worthy_count(pending) >= cap or _pending_units(pending) >= units_cap:
             flush(current_title)
 
     if float_pending:
         _emit_float(float_pending)
     flush(current_title)
-    return [s for s in slides if s.blocks]
+    return _coalesce(
+        [s for s in slides if s.blocks], cap=cap, units_cap=units_cap
+    )
+
+
+def _coalesce(
+    slides: list[Slide], *, cap: int, units_cap: int
+) -> list[Slide]:
+    """Merge adjacent under-filled slides back together.
+
+    Splitting alone produces orphans: a section whose last paragraph lands on its
+    own page, a lone equation after a full page, a heading whose body was broken
+    across a units boundary. Before this pass a 15-minute sparse deck contained
+    five single-bullet pages out of eight content pages -- each one a slide a
+    presenter would flick past in four seconds, and collectively the reason the
+    deck ran 126 seconds against a 900-second target.
+
+    Merging is deliberately conservative. Two slides join only when they share a
+    title, neither carries a visual, and the union stays inside both caps.
+    Consolidating across titles would fabricate a page the manuscript's structure
+    does not support, and merging a figure into text would defeat the layout
+    choice that gave the figure its own page.
+    """
+    if not slides:
+        return slides
+
+    merged: list[Slide] = [slides[0]]
+    for slide in slides[1:]:
+        previous = merged[-1]
+        if _mergeable(previous, slide, cap=cap, units_cap=units_cap):
+            previous.blocks.extend(slide.blocks)
+            # The role was inferred from a partial page, so it has to be redone.
+            previous.role = _infer_role(previous.blocks)
+            continue
+        merged.append(slide)
+    return merged
+
+
+def _mergeable(
+    first: Slide, second: Slide, *, cap: int, units_cap: int
+) -> bool:
+    """Whether two adjacent slides can become one."""
+    if first.role in _STRUCTURAL_ROLES or second.role in _STRUCTURAL_ROLES:
+        return False
+    # A visual earns its own page; text merged onto it would compete for space
+    # the figure was given deliberately.
+    if any(b.is_visual for b in first.blocks) or any(
+        b.is_visual for b in second.blocks
+    ):
+        return False
+    # Different headings are different points. Merging them would assert a
+    # relationship the manuscript did not.
+    if (first.title or "") != (second.title or ""):
+        return False
+
+    text_blocks = [
+        b for b in (*first.blocks, *second.blocks) if not b.is_visual
+    ]
+    if len(text_blocks) > cap:
+        return False
+    units = sum(count_units(b.content) for b in text_blocks)
+    return units <= units_cap
+
+
+#: Roles whose pages exist for structure rather than content, and so must never
+#: absorb a neighbour: a section divider that swallowed the following bullet
+#: would lose the divider's purpose.
+_STRUCTURAL_ROLES = frozenset(
+    {
+        SlideRole.COVER,
+        SlideRole.SECTION,
+        SlideRole.AGENDA,
+        SlideRole.ACKNOWLEDGEMENT,
+    }
+)
 
 
 def _make_slide(
@@ -647,6 +746,7 @@ def _make_slide(
     doc: ParsedDocument,
     assets: list[Asset],
     *,
+    unit_limit: int | None = None,
     rubric: str | None,
 ) -> Slide:
     blocks: list[Block] = []
@@ -654,7 +754,9 @@ def _make_slide(
     by_asset: dict[str, Block] = {}
 
     for seg in segments:
-        block = _segment_to_block(seg, doc, asset_lookup, rubric=rubric)
+        block = _segment_to_block(
+            seg, doc, asset_lookup, rubric=rubric, unit_limit=unit_limit
+        )
         if block is None:
             continue
         # An asset arrives as two segments (anchor plus caption) and must yield
@@ -705,6 +807,7 @@ def _segment_to_block(
     asset_lookup: dict,
     *,
     rubric: str | None,
+    unit_limit: int | None = None,
 ) -> Block | None:
     span = seg.span(doc.doc_id)
 
@@ -764,7 +867,7 @@ def _segment_to_block(
 
     if seg.kind in (SegmentKind.PARAGRAPH, SegmentKind.LIST_ITEM, SegmentKind.CAPTION):
         importance = _score(seg, rubric)
-        headline, note = _split_claim(seg.text)
+        headline, note = _split_claim(seg.text, unit_limit=unit_limit)
         # A long paragraph is not slide text. The lead clause goes up; the rest
         # becomes what the presenter says, so no content is lost.
         derivation = (
@@ -838,14 +941,31 @@ def _score(seg: Segment, rubric: str | None) -> float:
     return max(0.05, min(1.0, round(score, 3)))
 
 
-def _split_claim(text: str) -> tuple[str, str | None]:
+def _split_claim(
+    text: str, *, unit_limit: int | None = None
+) -> tuple[str, str | None]:
     """Split a paragraph into a slide headline and a spoken remainder.
 
-    The cut is made at a sentence boundary, never mid-sentence, so the headline
-    stays a truthful quotation of the author rather than a mangled fragment.
+    The cut lands at a sentence or clause boundary, never mid-phrase, so the
+    headline stays a truthful abridgement rather than a mangled fragment.
+
+    ``unit_limit`` is the density profile's per-bullet cap. It used to be absent,
+    on the stated assumption that "the budget allocator will compress it with real
+    knowledge of the template's capacity". The allocator does no such thing -- it
+    *accounts* for a compressed length and leaves the text alone. So a sparse deck
+    promising 18 units per bullet rendered its original 61-unit paragraphs, all
+    nine of them over cap, and the density setting changed nothing anyone could
+    see.
     """
     sentences = _sentences(text)
+
     if len(sentences) <= 1:
+        # One sentence, but possibly a long one. Splitting at a clause boundary is
+        # the only way to honour a tight cap here, and it is what a presenter does
+        # by instinct: put the claim up, say the qualifications.
+        if unit_limit and count_units(text) > unit_limit:
+            head, tail = head_and_tail(text, limit=unit_limit)
+            return head, tail or None
         return text, None
 
     head = sentences[0].strip()
@@ -858,9 +978,14 @@ def _split_claim(text: str) -> tuple[str, str | None]:
     if len(text) <= 30:
         return text, None
 
-    # If the first sentence is itself too long to be a bullet, keep it whole
-    # anyway: the budget allocator will compress it with real knowledge of the
-    # template's capacity, which this function does not have.
+    # The leading sentence can itself exceed the cap; carry the surplus into the
+    # spoken remainder rather than onto the slide.
+    if unit_limit and count_units(head) > unit_limit:
+        trimmed, spill = head_and_tail(head, limit=unit_limit)
+        if spill:
+            rest = f"{spill} {rest}".strip()
+        head = trimmed
+
     return head, rest or None
 
 
@@ -872,6 +997,21 @@ def _sentences(text: str) -> list[str]:
 def _slide_worthy_count(segments: list[Segment]) -> int:
     return sum(
         1
+        for s in segments
+        if s.kind in (SegmentKind.PARAGRAPH, SegmentKind.LIST_ITEM)
+    )
+
+
+def _pending_units(segments: list[Segment]) -> int:
+    """Budget units the pending segments would put on a slide.
+
+    Uses the same counter as the budget allocator, so "how much text fits" means
+    one thing across the pipeline. A separate character count here would drift
+    from the allocator's view and produce pages that the budget then had to
+    dismantle.
+    """
+    return sum(
+        count_units(s.text)
         for s in segments
         if s.kind in (SegmentKind.PARAGRAPH, SegmentKind.LIST_ITEM)
     )

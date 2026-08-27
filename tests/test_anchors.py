@@ -24,7 +24,7 @@ import itertools
 
 import pytest
 
-from rostrum.ir.enums import Scenario
+from rostrum.ir.enums import Density, Scenario
 from rostrum.render.anchors import (
     Anchor,
     AnchorMap,
@@ -248,6 +248,14 @@ def rendered(tmp_path_factory):
         "真实场景中，获取高质量标注的成本极高，可用样本常低于千级规模。"
     )
     doc.add_paragraph("现有自监督方法在小样本条件下普遍出现表征坍缩。")
+    # A deliberately long single bullet, pinned so planning keeps it intact. The
+    # anchor geometry test needs at least one bullet that wraps onto a second
+    # line; without one, every box is the same height and the test cannot tell
+    # correct wrapping from ignored wrapping.
+    doc.add_paragraph(
+        "该现象在跨域迁移与长尾分布并存的条件下尤为显著且难以通过简单的数据增强"
+        "或损失函数调整加以缓解因此需要从表征空间的几何结构入手重新设计约束项"
+    )
     doc.add_paragraph("本项目拟解决的核心科学问题是构造不坍缩的表征空间。")
     doc.add_heading("创新点", 1)
     doc.add_paragraph("提出结构一致性正则", style="List Bullet")
@@ -263,7 +271,16 @@ def rendered(tmp_path_factory):
     build_template(get_theme(DEFAULT_THEME_ID), str(template))
 
     parsed = parse_docx(str(src), asset_dir=str(d / "a"))
-    deck = plan_deck(parsed, total_seconds=480, scenario=Scenario.GRANT_DEFENSE)
+    # Compact density keeps long bullets long (42 units per bullet rather than
+    # 18), which this fixture needs: anchor geometry is only interesting when some
+    # bullets wrap onto a second line, and sparser settings now split prose into
+    # short single-line points.
+    deck = plan_deck(
+        parsed,
+        total_seconds=480,
+        scenario=Scenario.GRANT_DEFENSE,
+        density=Density.COMPACT,
+    )
     contract, _ = ingest_pptx(str(template), template_id="t", license="builtin")
     binding = bind(deck, contract)
     allocate(deck, apply=True, capacity=capacity_caps(binding))
