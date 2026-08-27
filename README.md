@@ -303,6 +303,82 @@ Reproduce the reference example and regenerate the schemas:
 PYTHONPATH=src python3 scripts/export_schemas.py
 ```
 
+
+## LaTeX Beamer
+
+In many fields a defence deck *is* a Beamer document, so Beamer is a first-class
+target rather than an export. Both renderers project the same IR, so the PDF and
+the PPTX cannot say different things — there is a test that asserts exactly that.
+
+```bash
+rostrum beamer talk.deck.json --out talk/talk.tex
+```
+
+```
+wrote talk/talk.tex
+wrote talk/talk.pdf  (13 pages)
+engine          : xelatex
+compile attempts: 1
+tightest page   : 6 at 84.9% of page height
+overflow rate   : 0.0%
+```
+
+Chinese works out of the box: the emitter finds an installed CJK font, loads
+`xeCJK`, and relabels figures and tables as 图 and 表 rather than leaving Beamer's
+English defaults in a Chinese application.
+
+Four presets, chosen for how much vertical space they leave for content:
+
+```bash
+rostrum beamer --list-themes
+```
+
+| preset | notes |
+| --- | --- |
+| `clean` | 无导航栏、无阴影，最大化可用版面（默认） |
+| `metropolis-like` | 深色标题栏，接近 metropolis 的观感但不依赖外部包 |
+| `serif` | 衬线正文，人文社科常用 |
+| `boxed` | 带侧边框，结构感强 |
+
+### Why overflow is measured, not parsed from the log
+
+The roadmap for this project claimed Beamer would make overflow *easier* to detect
+than PPTX, because a compiler reports it. That was wrong, and worth writing down.
+
+Ten long bullets on one frame produce this:
+
+```
+$ grep -iE "overfull|underfull" out.log
+$                       # nothing at all
+```
+
+Beamer squeezed all ten onto one page, pressed against the bottom edge, and said
+nothing. The frame that most needs splitting is exactly the one that gets silently
+compressed.
+
+So overflow is detected from the **compiled PDF's own geometry** — `pdftotext
+-bbox` gives the bounding box of every line actually placed, and text landing
+below 95.5% of the page height is overflowing regardless of what the log says.
+That measures the artefact instead of trusting a report about it, and it catches
+oversized figures and tables too, which never produce box warnings at all.
+
+When a frame does overflow, the fix is applied to the **IR**, not to the generated
+LaTeX: the least important block moves to the speaker script and the document is
+rebuilt. Every such move is reported, because content leaving a slide is a
+decision you must be able to see and reverse.
+
+```
+repair: s2.p1.b4: 移到讲稿以消除第 3 页溢出（内容压到页面 96.8% 处）
+```
+
+Two Beamer options would have hidden the problem instead, and both are refused.
+`allowframebreaks` silently splits a page you designed — the Beamer manual calls it
+*evil* for inviting "horrible, endless presentations that resemble a paper
+projected on the wall". `shrink` changes the font size from slide to slide, which
+the manual calls *very evil*. This tool selects content to fit the time available,
+so overflow is a planning result to report, not a typesetting problem to hide.
+
+
 ## The four load-bearing ideas
 
 **1. Budget before drafting.** `total_seconds × (1 − reserve) × rate` gives the

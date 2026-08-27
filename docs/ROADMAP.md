@@ -61,18 +61,41 @@ done and verified end to end.
 - [ ] LLM front-end emitting the same `Patch` objects, with these rules as the
       test oracle — and a `SYNTHESIZED` derivation on anything it re-drafts
 
-## v0.6 — Beamer renderer
+## v0.6 — Beamer renderer ✅
 
-- [ ] IR → Beamer `.tex`, honouring the theme's frame templates
-- [ ] **Compile-repair loop**: `latexmk` → parse errors → locate the offending IR
-      node → patch → recompile, with a retry ceiling and graceful degradation
-- [ ] LaTeX escaping, `xeCJK` font handling
-- [ ] Overfull-box detection — machine-readable, so overflow checking is
-      *easier* here than in PPTX
-- [ ] Shared golden-deck tests across both renderers from one IR
-      (PPTX: shape EMU from XML + LibreOffice-headless render;
-      Beamer: `zref-savepos` / `tikzmark` compile-time probes)
+- [x] IR → Beamer `.tex` across four presets, chosen for how much vertical space
+      they leave for content
+- [x] **Compile-repair loop**: emit → compile → measure → move the least important
+      block to the script → rebuild, with a retry ceiling. Repairs act on the IR,
+      never on the generated LaTeX, so they survive the next rebuild
+- [x] LaTeX escaping in a single pass (sequential replacement corrupts its own
+      output), `xeCJK` with font auto-detection, 图/表 captions
+- [x] Overflow detection from **compiled-PDF geometry**, not the LaTeX log
+- [x] Unicode-mathematics handling for equations that are prose rather than LaTeX
+- [x] Dual-renderer consistency tests: slide count, every title, every
+      slide-channel block
 - [ ] `retime` as a first-class edit, preserving pinned decisions
+
+### Correction: overflow detection is *harder* in Beamer, not easier
+
+This section previously claimed overfull-box warnings were machine-readable and
+therefore made overflow checking easier here than in PPTX. **Testing disproved
+it.** Ten long bullets on one frame produce no `Overfull` warning at all — Beamer
+squeezes them onto one page, against the bottom edge, silently. The frame that most
+needs splitting is the one that gets compressed without comment.
+
+Detection is therefore geometric: `pdftotext -bbox` gives the bounding box of every
+line actually placed, and text below 95.5% of page height is overflowing whatever
+the log says. This is better than the original plan — it measures the artefact
+rather than a report about it, and it catches figures and tables, which never
+produce box warnings.
+
+`latexmk` was also assumed and is not always installed; `xelatex` is invoked
+directly for a fixed number of passes instead.
+
+`allowframebreaks` and `shrink` are both refused. The Beamer manual calls the first
+*evil* and the second *very evil*, and both would hide the overflow this tool
+exists to prevent.
 
 Pixel-accurate lasso selection is intentionally deferred; block anchoring covers
 the real use case.

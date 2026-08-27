@@ -652,6 +652,108 @@ def cmd_point(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_beamer(args: argparse.Namespace) -> int:
+    """Emit Beamer LaTeX, and by default compile and verify it.
+
+    Verification measures the compiled PDF's own geometry rather than trusting
+    the LaTeX log. Beamer squeezes an over-full frame and frequently says
+    nothing, so a clean log is not evidence that a deck fits -- see
+    rostrum.render.beamer_verify for the finding that forced this design.
+    """
+    from rostrum.ir.nodes import Deck
+    from rostrum.render.beamer import THEMES, render_beamer
+
+    # Listing themes must not require a deck: it is the command a user runs
+    # before they have one.
+    if args.list_themes:
+        print("Beamer 主题：")
+        for name, spec in THEMES.items():
+            print(f"  {name:18s} {spec['description']}")
+        return 0
+
+    if not args.deck:
+        print("beamer needs a deck (or --list-themes)", file=sys.stderr)
+        return 2
+
+    deck = Deck.model_validate_json(
+        pathlib.Path(args.deck).read_text(encoding="utf-8")
+    )
+
+    out = args.out or str(pathlib.Path(args.deck).with_suffix(".tex"))
+
+    if args.tex_only:
+        report = render_beamer(
+            deck, out, theme=args.theme, aspect=args.aspect,
+            font_size_pt=args.font_size, cjk_font=args.cjk_font,
+        )
+        print(f"wrote {out}  ({report.frames_written} frames)")
+        if report.cjk_font:
+            print(f"CJK font: {report.cjk_font}")
+        for path, why in report.degraded:
+            print(f"degraded: {path}: {why}", file=sys.stderr)
+        for w in report.warnings:
+            print(f"warning: {w}", file=sys.stderr)
+        print()
+        print(f"compile with: xelatex {pathlib.Path(out).name}")
+        return 0 if report.ok else 1
+
+    from rostrum.render.beamer_verify import LatexNotAvailable, build_pdf
+
+    try:
+        result = build_pdf(
+            deck, out,
+            theme=args.theme,
+            engine=args.engine,
+            max_attempts=args.max_attempts,
+            cjk_font=args.cjk_font,
+            repair=not args.no_repair,
+        )
+    except LatexNotAvailable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+
+    print(f"wrote {result.tex_path}")
+    if result.pdf_path:
+        print(f"wrote {result.pdf_path}  ({result.final.pages} pages)")
+    print(f"engine          : {result.final.engine if result.final else '-'}")
+    print(f"compile attempts: {result.attempts}")
+
+    if result.final and result.final.geometry:
+        worst = max(result.final.geometry, key=lambda g: g.bottom_fraction)
+        print(
+            f"tightest page   : {worst.page} at "
+            f"{worst.bottom_fraction * 100:.1f}% of page height"
+        )
+        print(f"overflow rate   : {result.final.overflow_rate * 100:.1f}%")
+    elif result.pdf_path:
+        # A PDF exists but has no measurable geometry: poppler is missing.
+        print("overflow check  : skipped (pdftotext not found)")
+    else:
+        # No PDF at all — say that, rather than blaming a missing tool the user
+        # may well have installed. The earlier wording sent people looking for
+        # poppler when the real problem was a compile error above.
+        print("overflow check  : not run (no PDF was produced)")
+
+    for repair in result.repairs:
+        print(f"repair: {repair}")
+    for warning in result.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    for error in result.errors:
+        print(f"error: {error}", file=sys.stderr)
+
+    if result.deck_changed:
+        print()
+        print(
+            "note: content was moved to the speaker script to make frames fit. "
+            "Pass --no-repair to see the overflow instead, or edit the deck: "
+            f"rostrum edit {args.deck} --say '...'"
+        )
+
+    if not result.ok:
+        return 1
+    return 0 if result.fits else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="rostrum",
@@ -716,6 +818,33 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--export", metavar="ID", help="write a theme out as .pptx")
     t.add_argument("--out", help="output path for --export")
     t.set_defaults(func=cmd_themes)
+
+    bm = sub.add_parser("beamer", help="render the deck as Beamer LaTeX and PDF")
+    bm.add_argument("deck", nargs="?", help="deck IR json")
+    bm.add_argument("--out", help="output .tex path (default: alongside the deck)")
+    bm.add_argument(
+        "--theme", default="clean", help="beamer theme preset (see --list-themes)"
+    )
+    bm.add_argument("--list-themes", action="store_true", help="list theme presets")
+    bm.add_argument("--aspect", default="169", help="aspect ratio: 169, 43, 1610")
+    bm.add_argument("--font-size", type=int, default=11, help="base font size in pt")
+    bm.add_argument("--cjk-font", help="CJK font family name")
+    bm.add_argument("--engine", help="xelatex or lualatex (default: auto-detect)")
+    bm.add_argument(
+        "--tex-only",
+        action="store_true",
+        help="emit .tex without compiling; skips the overflow check",
+    )
+    bm.add_argument(
+        "--no-repair",
+        action="store_true",
+        help="report overflow instead of moving content to the script",
+    )
+    bm.add_argument(
+        "--max-attempts", type=int, default=3,
+        help="compile/repair rounds before giving up (default: 3)",
+    )
+    bm.set_defaults(func=cmd_beamer)
 
     pv = sub.add_parser(
         "preview", help="render page images plus a clickable anchor map"
