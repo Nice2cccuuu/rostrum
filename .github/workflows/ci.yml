@@ -17,11 +17,33 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install CJK fonts
-        # Capacity measurement is only meaningful against a real font; without
-        # one the metrics tests fall back and stop being informative.
-        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
-      - run: pip install -e ".[dev,pptx]"
+      - name: Install CJK fonts, LaTeX and poppler
+        # Three separate reasons, all load-bearing:
+        #   fonts-noto-cjk  — capacity measurement is only meaningful against a
+        #                     real font; without one the metrics tests fall back
+        #                     and stop being informative.
+        #   xelatex         — the Beamer tests skip themselves without an engine,
+        #                     so CI would silently stop covering that renderer.
+        #   pdftotext       — overflow is detected from compiled-PDF geometry, so
+        #                     without poppler the check is skipped rather than run.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            fonts-noto-cjk \
+            poppler-utils \
+            texlive-xetex texlive-latex-recommended texlive-fonts-recommended
+      - run: pip install -e ".[dev,pdf]"
+      - name: Verify the Beamer tests are actually running, not skipping
+        # A renderer whose tests all skip is a renderer with no coverage. This
+        # fails loudly rather than reporting a green build over skipped work.
+        run: |
+          python -c "
+          from rostrum.render.beamer_verify import find_engine
+          import shutil, sys
+          missing = [n for n, ok in (('xelatex', find_engine()),
+                                     ('pdftotext', shutil.which('pdftotext'))) if not ok]
+          sys.exit(f'CI is missing {missing}; Beamer coverage would be skipped' if missing else 0)
+          "
       - run: ruff check src tests scripts
       - run: pytest
 
@@ -38,3 +60,34 @@ jobs:
       - run: PYTHONPATH=src python3 scripts/export_schemas.py
       - name: Fail if schemas or examples drifted
         run: git diff --exit-code -- schemas/ examples/
+
+  fresh-install:
+    # The defect this catches: a clean clone crashed on its first command because
+    # lxml, Pillow, python-docx and PyMuPDF were imported but never declared. The
+    # test suite passed throughout, because the dev environment happened to have
+    # them. Only installing from scratch reveals it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install with declared dependencies only
+        run: pip install -e .
+      - name: The documented workflow must run
+        run: |
+          rostrum --help
+          rostrum themes
+          rostrum ingest fixtures/proposal.docx --minutes 8 --out /tmp/t.json
+          rostrum render /tmp/t.json --out /tmp/t.pptx
+      - name: A missing optional dependency must explain itself
+        # PyMuPDF is deliberately absent here; asking for a PDF must produce an
+        # instruction, not a bare ModuleNotFoundError naming a module ("fitz")
+        # that does not resemble the package providing it.
+        run: |
+          python -c "
+          from rostrum.cli import _explain_missing
+          msg = _explain_missing(ModuleNotFoundError(name='fitz'))
+          assert 'pip install' in msg, msg
+          print(msg)
+          "

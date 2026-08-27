@@ -24,7 +24,6 @@ import tempfile
 from rostrum import __version__
 from rostrum.budget import allocate, estimate_duration
 from rostrum.ir import Deck, validate
-from rostrum.templates import bind, capacity_caps, ingest_pptx, title_overflows
 from rostrum.themes import DEFAULT_THEME_ID
 
 
@@ -46,6 +45,8 @@ def _default_font() -> str | None:
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
+    from rostrum.templates import ingest_pptx
+
     contract, report = ingest_pptx(
         args.template,
         font_path=args.font or _default_font(),
@@ -90,6 +91,8 @@ def cmd_render(args: argparse.Namespace) -> int:
         pathlib.Path(args.deck).read_text(encoding="utf-8")
     )
     font = args.font or _default_font()
+
+    from rostrum.templates import bind, capacity_caps, ingest_pptx, title_overflows
 
     contract, ingest_report = ingest_pptx(
         args.template, font_path=font, language=deck.meta.language
@@ -178,9 +181,38 @@ _PARSERS = {
     ".latex": "latex",
 }
 
+#: Import failures a user can act on.
+#:
+#: A bare ``ModuleNotFoundError: No module named 'fitz'`` tells someone who just
+#: followed the README nothing about what to do -- "fitz" does not even resemble
+#: the name of the package that provides it. This maps the module to the command
+#: that fixes it.
+_MISSING_HINTS = {
+    "docx": "pip install python-docx",
+    "fitz": "pip install 'rostrum[pdf]'",
+    "pptx": "pip install python-pptx",
+    "lxml": "pip install lxml",
+    "PIL": "pip install Pillow",
+    "fontTools": "pip install fonttools",
+}
+
+
+def _explain_missing(exc: ModuleNotFoundError) -> str:
+    """Turn a missing-module error into an instruction."""
+    name = (exc.name or "").split(".")[0]
+    hint = _MISSING_HINTS.get(name)
+    if hint:
+        return f"missing dependency {name!r}. Install it with:\n    {hint}"
+    return f"missing dependency {name!r}: {exc}"
+
 
 def _parse_manuscript(path: str, *, language: str, minutes: float):
-    """Dispatch to the parser for this file type."""
+    """Dispatch to the parser for this file type.
+
+    Parsers are imported here rather than at module scope so that a missing
+    optional dependency breaks only the format that needs it. Importing them all
+    up front means a user without PyMuPDF cannot open a .docx either.
+    """
     suffix = pathlib.Path(path).suffix.lower()
     kind = _PARSERS.get(suffix)
     if kind is None:
@@ -189,17 +221,20 @@ def _parse_manuscript(path: str, *, language: str, minutes: float):
             f"expected one of {', '.join(sorted(_PARSERS))}"
         )
 
-    if kind == "docx":
-        from rostrum.ingest.docx_parser import parse_docx
+    try:
+        if kind == "docx":
+            from rostrum.ingest.docx_parser import parse_docx
 
-        return parse_docx(path, language=language)
-    if kind == "pdf":
-        from rostrum.ingest.pdf_parser import parse_pdf
+            return parse_docx(path, language=language)
+        if kind == "pdf":
+            from rostrum.ingest.pdf_parser import parse_pdf
 
-        return parse_pdf(path, language=language)
-    from rostrum.ingest.latex_parser import parse_latex
+            return parse_pdf(path, language=language)
+        from rostrum.ingest.latex_parser import parse_latex
 
-    return parse_latex(path, language=language)
+        return parse_latex(path, language=language)
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(_explain_missing(exc)) from exc
 
 
 def cmd_themes(args: argparse.Namespace) -> int:
@@ -326,9 +361,15 @@ def cmd_build(args: argparse.Namespace) -> int:
         scenario=Scenario(args.scenario),
         presenter=args.presenter,
     )
-    deck_path = pathlib.Path(
-        args.deck_out or str(pathlib.Path(args.manuscript).with_suffix(".deck.json"))
-    )
+    # The intermediate IR follows --out, not the manuscript. Defaulting it beside
+    # the input writes into a directory the user did not nominate -- typically the
+    # folder holding their manuscript, which now has a stray .deck.json in it.
+    if args.deck_out:
+        deck_path = pathlib.Path(args.deck_out)
+    elif args.out:
+        deck_path = pathlib.Path(args.out).with_suffix(".deck.json")
+    else:
+        deck_path = pathlib.Path(args.manuscript).with_suffix(".deck.json")
     # Create the parent directory rather than failing on it: being told
     # "No such file or directory" for an output path you just specified is a
     # pointless obstacle.
