@@ -94,8 +94,16 @@ def cmd_render(args: argparse.Namespace) -> int:
 
     from rostrum.templates import bind, capacity_caps, ingest_pptx, title_overflows
 
+    # A template is optional here, as it is for `build` and `preview`: omitting it
+    # yields a built-in theme rather than an error. Requiring it made the three
+    # commands disagree, and `rostrum render deck.json` -- the form the README
+    # documents -- simply failed.
+    template, scratch = _resolve_template(args)
+    # The scratch template is deleted at the end of the command, not here: the
+    # renderer reopens it after ingest to copy the layout, so releasing it early
+    # fails with PackageNotFoundError on a path the user never chose.
     contract, ingest_report = ingest_pptx(
-        args.template, font_path=font, language=deck.meta.language
+        template, font_path=font, language=deck.meta.language
     )
     for w in ingest_report.warnings:
         print(f"template: {w}", file=sys.stderr)
@@ -166,12 +174,16 @@ def cmd_render(args: argparse.Namespace) -> int:
     for uid in render.demoted_to_notes:
         print(f"moved to notes: {uid}", file=sys.stderr)
 
+    if scratch:
+        with contextlib.suppress(OSError):
+            os.unlink(scratch)
     return 0 if render.ok else 2
 
 
 # --------------------------------------------------------------------------- #
 # ingest
 # --------------------------------------------------------------------------- #
+
 
 _PARSERS = {
     ".docx": "docx",
@@ -213,7 +225,17 @@ def _parse_manuscript(path: str, *, language: str, minutes: float):
     optional dependency breaks only the format that needs it. Importing them all
     up front means a user without PyMuPDF cannot open a .docx either.
     """
-    suffix = pathlib.Path(path).suffix.lower()
+    source = pathlib.Path(path)
+    # Check existence here rather than letting the parsing library complain. A
+    # user who mistyped a filename got "PackageNotFoundError: Package not found
+    # at '...'" from python-docx internals, which describes the library's problem
+    # instead of theirs.
+    if not source.exists():
+        raise FileNotFoundError(f"no such manuscript: {path}")
+    if source.is_dir():
+        raise IsADirectoryError(f"{path} is a directory, not a manuscript")
+
+    suffix = source.suffix.lower()
     kind = _PARSERS.get(suffix)
     if kind is None:
         raise ValueError(
@@ -812,7 +834,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("render", help="render a deck IR against a template")
     r.add_argument("deck", help="deck IR JSON")
-    r.add_argument("template", help=".pptx template")
+    r.add_argument(
+        "template", nargs="?", help=".pptx template (default: a built-in theme)"
+    )
+    r.add_argument(
+        "--theme", help=f"built-in theme when no template is given "
+                        f"(default: {DEFAULT_THEME_ID})"
+    )
     r.add_argument("--out", help="output .pptx path")
     r.add_argument("--script", help="output speaker script path")
     r.add_argument("--font", help="font used for measurement")
