@@ -133,12 +133,93 @@ print(report.overflow_rate)                         # 0.0
 Bind **before** allocating: the budget must be clamped by what the chosen layout
 was measured to hold.
 
-Or from the shell:
+Or from the shell -- start here if you just want slides:
 
 ```bash
-rostrum inspect lab-template.pptx      # what can this template hold?
+# No template of your own? A built-in theme is used.
+rostrum build proposal.docx --minutes 8 --out talk.pptx
+
+rostrum themes                          # four built-in themes, with contrast ratios
+rostrum build proposal.docx --theme conference-dark --minutes 12
+rostrum build proposal.docx lab-template.pptx --minutes 8   # your template
+
+rostrum inspect lab-template.pptx       # what can this template hold?
 rostrum render deck.json lab-template.pptx
 ```
+
+### Revising in words
+
+`build` writes a `.deck.json` alongside the slides. Edit it by saying what you
+want changed, then render again:
+
+```bash
+rostrum edit proposal.deck.json          # interactive
+rostrum edit proposal.deck.json --say '第3页太满了，把后两条放到讲稿'
+```
+
+```
+> 第3页太满了，把后两条放到讲稿
+  读作：把 2 条内容移到演讲文稿  [置信 0.90]
+    · 提到内容过满
+    · 要求移到讲稿
+    · 第3页
+    · 取最后 2 条
+  channel   s2.p1.b2  (内容保留，位置改变)
+    - 页面上
+    + 演讲文稿
+  channel   s2.p1.b3  (内容保留，位置改变)
+    - 页面上
+    + 演讲文稿
+  已应用：2 changed
+```
+
+Four things about that output are deliberate.
+
+**It says how it read you, and why.** The cues it matched are listed, so a
+misreading is visible before it costs you anything.
+
+**It shows the diff, not a summary.** Content that leaves a slide moves to the
+speaker script -- the diff says "位置改变", because it was moved, not deleted.
+
+**Confident edits apply; unclear ones ask.** Below 0.75 confidence you get the
+diff and a question instead of a change. Requests it cannot resolve are refused
+with something useful:
+
+```
+> 把这页弄好看点
+  未执行：no rule matched
+  我没听懂这条修改。可以试着说得更具体些，比如「第3页太满了，把后两条放到讲稿」…
+
+> 第99页太满了
+  未执行：这份 deck 只有 13 页，没有第99页
+```
+
+**Every edit is a value in an append-only log.** So `:undo`, `:redo` and replay
+work, and a revision session is reproducible:
+
+```bash
+rostrum edit proposal.deck.json --replay proposal.log.json
+```
+
+The interpreter is rule-based and runs offline -- clone the repo and it works,
+no API key. An LLM front-end is a supported extension rather than a
+prerequisite: it emits the same `Patch` objects and passes the same containment
+assertion, with these rules as its test oracle.
+
+Things it currently understands, all resolvable by pointing instead of
+describing:
+
+| You say | It does |
+| --- | --- |
+| 第3页太满了，把后两条放到讲稿 | moves those bullets to the script |
+| 创新点这页多给30秒 | fixes that slide's time, redistributes the rest |
+| 整体压到6分钟 | re-budgets the whole talk, keeping pinned decisions |
+| 整体做稀疏一点 | switches density, re-clamping every page |
+| 把「本项目」改成「本课题」 | substitutes in body text **and** headings |
+| 创新点这页拆成两页 | splits at the midpoint, titling the second 「（续）」 |
+| 第3页第2条删掉 | routes it to `drop` -- reversible, not erased |
+| 这条一定要留在页面上 | pins it against later rebalancing |
+| 研究基础这页放到备用 | moves it out of the timed budget |
 
 ```
 validation: 0 error(s), 0 warning(s), 0 info

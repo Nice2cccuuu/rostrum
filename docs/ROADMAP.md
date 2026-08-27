@@ -39,25 +39,35 @@ The schema locks every downstream interface, so it comes first.
 The remaining v0.2 items are the *input* half of the pipeline. The output half is
 done and verified end to end.
 
-## v0.3 — Beamer renderer
+## v0.4 — Built-in themes ✅
+
+- [x] Four themes generated as real OOXML: master, twelve layouts, theme part
+- [x] Contrast measured against WCAG AA; registration fails below the floor
+- [x] Talk structure: cover, agenda, numbered section dividers, closing
+- [x] `rostrum build` with no template at all; `rostrum themes --export`
+
+## v0.5 — Natural-language revision ✅ (partial)
+
+- [x] Utterance → `Patch` compiler, emitting typed ops with `confidence`
+- [x] Blast-radius assertion on apply: nothing outside `affected_uids()` changed
+- [x] Diff preview for low-confidence patches; auto-apply above threshold
+- [x] Undo / redo / replay over the edit log
+- [x] Slide-level `dwell_locked`, so a stated timing survives re-budgeting
+- [x] `rostrum edit`, interactive and batch
+- [ ] **Click-to-select**, block-level anchoring:
+      export `element_id → bbox` alongside each preview
+- [ ] LLM front-end emitting the same `Patch` objects, with these rules as the
+      test oracle — and a `SYNTHESIZED` derivation on anything it re-drafts
+
+## v0.6 — Beamer renderer
 
 - [ ] IR → Beamer `.tex`, honouring the theme's frame templates
 - [ ] **Compile-repair loop**: `latexmk` → parse errors → locate the offending IR
       node → patch → recompile, with a retry ceiling and graceful degradation
-      (e.g. equation → image)
 - [ ] LaTeX escaping, `xeCJK` font handling
 - [ ] Overfull-box detection — machine-readable, so overflow checking is
       *easier* here than in PPTX
 - [ ] Shared golden-deck tests across both renderers from one IR
-
-## v0.4 — Natural-language revision
-
-- [ ] Utterance → `Patch` compiler, emitting typed ops with `confidence`
-- [ ] Blast-radius assertion on apply: nothing outside `affected_uids()` changed
-- [ ] Diff preview for low-confidence patches; auto-apply above threshold
-- [ ] Undo / redo / replay over the edit log
-- [ ] **Click-to-select**, block-level anchoring:
-      export `element_id → bbox` alongside each preview
       (PPTX: shape EMU from XML + LibreOffice-headless render;
       Beamer: `zref-savepos` / `tikzmark` compile-time probes)
 - [ ] `retime` as a first-class edit, preserving pinned decisions

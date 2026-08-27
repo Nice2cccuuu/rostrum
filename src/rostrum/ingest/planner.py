@@ -243,10 +243,27 @@ def _add_navigation(
         Scenario.THESIS_DEFENSE,
         Scenario.CONFERENCE_ORAL,
     )
+    # Numbering counts only the sections that actually get a divider. Numbering
+    # every section instead produced a deck showing "二、" then "四、", which
+    # reads as though two sections went missing.
+    divided = [
+        s
+        for s in sections
+        if want_dividers and not _all_backup(s) and _deserves_divider(s)
+    ]
+    numbers = {s.uid: i for i, s in enumerate(divided, start=1)}
+
     for section in sections:
-        if want_dividers and not _all_backup(section):
+        if section.uid in numbers:
+            n = numbers[section.uid]
+            label = (
+                f"{_CN_ORDINALS[n]}、{section.title}"
+                if n < len(_CN_ORDINALS)
+                else section.title
+            )
+            _distinguish_first_page(section)
             section.slides.insert(
-                0, Slide(role=SlideRole.SECTION, title=section.title, blocks=[])
+                0, Slide(role=SlideRole.SECTION, title=label, blocks=[])
             )
         out.append(section)
 
@@ -265,6 +282,83 @@ def _add_navigation(
         )
     )
     return out
+
+
+# Section numbering for dividers. Numbering does more than decorate: a divider
+# titled identically to the content page behind it reads as a duplicate slide,
+# and it also makes "创新点这页" ambiguous to the revision interpreter, which
+# then has to ask which of two same-named pages was meant.
+_CN_ORDINALS = (
+    "",
+    "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+    "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八",
+)
+
+
+def _distinguish_first_page(section: Section) -> None:
+    """Retitle a content page that merely repeats its section's name.
+
+    A divider reading "一、研究目标与内容" followed immediately by a page titled
+    "研究目标与内容" looks like the same slide shown twice. The content page gets
+    a title describing what is actually on it, drawn from its own blocks, and
+    falls back to leaving the repetition alone rather than inventing a heading.
+    """
+    body = [s for s in section.slides if not s.is_backup]
+    if not body:
+        return
+    first = body[0]
+    if first.title != section.title:
+        return
+
+    text = " ".join(b.content for b in first.blocks)[:300]
+
+    # Phrases the author used to open the page. These are their words, so using
+    # one as a heading is a quotation rather than an invention.
+    for phrase, heading in _OPENING_PHRASES:
+        if phrase in text and heading != section.title:
+            first.title = heading
+            return
+
+    for key, heading in _TOPIC_KEYWORDS:
+        if key in text and heading != section.title:
+            first.title = heading
+            return
+    # Nothing better to say: an honest repetition beats a fabricated heading.
+
+
+# Ordered most specific first. Mapping the author's own opening phrase to a
+# heading keeps the title traceable to the manuscript.
+_OPENING_PHRASES: tuple[tuple[str, str], ...] = (
+    ("总体思路", "总体思路"),
+    ("总体框架", "总体框架"),
+    ("整体思路", "整体思路"),
+    ("研究思路", "研究思路"),
+    ("拟解决的核心科学问题", "拟解决的科学问题"),
+    ("核心科学问题", "拟解决的科学问题"),
+    ("总体目标", "总体目标"),
+    ("主要内容", "主要研究内容"),
+)
+
+_TOPIC_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("科学问题", "拟解决的科学问题"),
+    ("技术路线", "技术路线"),
+    ("研究现状", "研究现状"),
+    ("前期工作", "前期工作基础"),
+    ("可行性", "可行性说明"),
+    ("研究目标", "研究目标"),
+    ("研究内容", "研究内容"),
+)
+
+
+def _deserves_divider(section: Section) -> bool:
+    """Whether a section is substantial enough to announce.
+
+    A divider in front of a single content page spends two slides to deliver
+    one, which is worse than no signposting at all: the audience gets a beat of
+    ceremony and then the section is over. Two pages is where announcing starts
+    to help.
+    """
+    return len([s for s in section.slides if not s.is_backup]) >= 2
 
 
 def _cover_subtitle(doc: ParsedDocument, front: dict) -> str | None:

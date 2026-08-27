@@ -126,12 +126,41 @@ def allocate(
     # content, so a heavily weighted section with thin slides does not hoard
     # time it cannot use.
     shares: list[tuple[Slide, float]] = []
+    locked: list[Slide] = []
     for section, slide in deck.iter_slides():
         if slide.is_backup:
             continue
+        if slide.dwell_locked and slide.dwell_seconds:
+            # A time the user stated explicitly. Held out of the pool so that
+            # re-budgeting cannot quietly overwrite it -- the whole point of
+            # "give this page 30 more seconds" is that it survives the next edit.
+            locked.append(slide)
+            continue
         shares.append((slide, section.weight * _slide_mass(slide)))
 
+    reserved = sum(s.dwell_seconds or 0.0 for s in locked)
+    if reserved > effective:
+        result.notes.append(
+            f"slides with fixed timings already claim {reserved:.0f}s of the "
+            f"{effective:.0f}s available; the rest of the talk has no time left"
+        )
+    effective = max(0.0, effective - reserved)
+
     if not shares:
+        if locked:
+            result.notes.append(
+                f"every content slide has a fixed timing ({reserved:.0f}s total)"
+            )
+            for slide in locked:
+                result.slides.append(
+                    SlideAllocation(
+                        slide_uid=slide.uid,
+                        dwell_seconds=slide.dwell_seconds or 0.0,
+                        slide_units=0,
+                        script_units=0,
+                    )
+                )
+            return result
         result.notes.append("deck has no content slides; nothing to allocate")
         return result
 
@@ -176,6 +205,29 @@ def allocate(
             slide.dwell_seconds = alloc.dwell_seconds
         result.slides.append(alloc)
 
+    # Locked slides still need their text budgets computed; only their time is
+    # exempt from redistribution.
+    for slide in locked:
+        alloc = SlideAllocation(
+            slide_uid=slide.uid,
+            dwell_seconds=slide.dwell_seconds or 0.0,
+            slide_units=min(
+                prof.max_units_per_slide,
+                capacity.get(slide.uid, (prof.max_units_per_slide, 0))[0]
+                or prof.max_units_per_slide,
+            ),
+            script_units=0,
+            capacity_units=capacity.get(slide.uid, (0, 0))[0] or None,
+        )
+        _allocate_within_slide(
+            slide,
+            alloc,
+            prof,
+            apply=apply,
+            max_bullets=capacity.get(slide.uid, (0, 0))[1] or None,
+        )
+        result.slides.append(alloc)
+
     # ---- 2. report structural drift ------------------------------------ #
     if result.slide_count_drift > 0:
         result.notes.append(
@@ -190,7 +242,37 @@ def allocate(
             f"{-result.slide_count_drift} more"
         )
 
+    _warn_about_long_slides(deck, result)
     return result
+
+
+# A single slide holding more than this share of the talk is a pacing problem
+# regardless of how much content justifies it: an audience loses the thread, and
+# a panel chair starts looking at the clock.
+_LONG_SLIDE_SHARE = 0.22
+
+
+def _warn_about_long_slides(deck: Deck, result: BudgetPlan) -> None:
+    """Flag slides that will swallow a disproportionate share of the talk.
+
+    The allocator distributes by content mass, which is right on average and can
+    still produce a page holding a third of the talk when the manuscript put
+    everything in one section. Splitting is the user's call, so this reports
+    rather than acts.
+    """
+    total = sum(a.dwell_seconds for a in result.slides) or 1.0
+    for alloc in result.slides:
+        share = alloc.dwell_seconds / total
+        if share < _LONG_SLIDE_SHARE:
+            continue
+        slide = deck.find(alloc.slide_uid)
+        if slide is None or slide.role in Deck.NAVIGATION_ROLES:
+            continue
+        label = slide.title or deck.path_of(slide.uid) or slide.uid
+        result.notes.append(
+            f"'{label}' takes {alloc.dwell_seconds:.0f}s, {share * 100:.0f}% of "
+            "the talk; consider splitting it or moving detail to the script"
+        )
 
 
 # Relative time weight for a slide with no content blocks: a cover, divider or

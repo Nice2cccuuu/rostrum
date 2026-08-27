@@ -404,6 +404,15 @@ class Slide(IRModel):
             "reconcile with the talk's total duration."
         ),
     )
+    dwell_locked: bool = Field(
+        default=False,
+        description=(
+            "Protect dwell_seconds from reallocation. Set when a user states a "
+            "time for this slide explicitly: re-budgeting the talk must honour "
+            "that decision instead of silently overwriting it, which is the "
+            "slide-level counterpart of a pinned block."
+        ),
+    )
     layout_hint: str | None = Field(
         default=None,
         description=(

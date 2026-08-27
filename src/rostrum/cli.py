@@ -355,6 +355,142 @@ def cmd_build(args: argparse.Namespace) -> int:
                 os.unlink(scratch)
 
 
+def cmd_edit(args: argparse.Namespace) -> int:
+    """Revise a deck by describing the change in words.
+
+    Interactive by default because revision is a conversation: the user says
+    something, sees exactly what it would do, and either accepts it or rephrases.
+    Batch mode (``--say``) exists for scripting and for the test suite.
+
+    Confident edits apply immediately; anything below the threshold is shown as a
+    diff and waits for confirmation. That asymmetry is the point -- a tool that
+    asks about everything is tiresome, and one that asks about nothing cannot be
+    trusted with a deck you have to defend.
+    """
+    from rostrum.ir.nodes import Deck
+    from rostrum.patch.ops import EditLog
+    from rostrum.patch.session import Session
+
+    deck_path = pathlib.Path(args.deck)
+    deck = Deck.model_validate_json(deck_path.read_text(encoding="utf-8"))
+
+    capacity = None
+    if args.template:
+        from rostrum.templates import bind, capacity_caps, ingest_pptx
+
+        contract, warnings = ingest_pptx(
+            args.template, template_id=pathlib.Path(args.template).stem
+        )
+        for w in warnings:
+            print(f"template: {w}", file=sys.stderr)
+        capacity = capacity_caps(bind(deck, contract))
+        print(f"measured {len(contract.layouts)} layouts from {args.template}")
+
+    session = Session(original=deck, capacity=capacity)
+
+    log_path = pathlib.Path(args.log) if args.log else deck_path.with_suffix(".log.json")
+    if args.replay:
+        stored = EditLog.model_validate_json(
+            pathlib.Path(args.replay).read_text(encoding="utf-8")
+        )
+        session.replay(stored)
+        print(f"replayed {len(stored.patches)} patch(es) from {args.replay}")
+
+    selection = args.select or []
+    if args.say:
+        for utterance in args.say:
+            _run_utterance(session, utterance, selection, args)
+    else:
+        _repl(session, selection, args)
+
+    _save_session(session, deck_path, log_path, args)
+    return 0
+
+
+def _run_utterance(session, utterance: str, selection: list[str], args) -> None:
+    result, diff, report = session.say(
+        utterance, selection=selection, threshold=args.threshold
+    )
+    print(f"> {utterance}")
+    if not result.ok:
+        print(f"  未执行：{result.reason}")
+        if result.question:
+            print(f"  {result.question}")
+        return
+
+    print(f"  读作：{result.reason}  [置信 {result.confidence:.2f}]")
+    for line in result.evidence:
+        print(f"    · {line}")
+    if diff:
+        for line in diff.render().splitlines():
+            print(f"  {line}")
+
+    if report is None:
+        print("  未应用：置信不足，需确认（加 --yes 可直接应用）")
+        if args.yes:
+            session.apply(result.patch)
+            print("  已按 --yes 应用")
+    else:
+        print(f"  已应用：{report.summary()}")
+    for note in (report.notes if report else []):
+        print(f"  note: {note}")
+
+
+def _repl(session, selection: list[str], args) -> None:
+    print("说出你的修改要求，一行一条。")
+    print("  :undo  撤销    :redo  重做    :log  编辑历史")
+    print("  :diff  累计改动 :pages 页面清单 :quit 保存并退出")
+    print()
+    while True:
+        try:
+            line = input("rostrum> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not line:
+            continue
+        if line in (":quit", ":q", ":exit"):
+            return
+        if line == ":undo":
+            undone = session.undo()
+            print(f"  已撤销：{undone.utterance}" if undone else "  没有可撤销的操作")
+            continue
+        if line == ":redo":
+            redone = session.redo()
+            print(f"  已重做：{redone.utterance}" if redone else "  没有可重做的操作")
+            continue
+        if line == ":log":
+            history = session.history()
+            print("\n".join(f"  {h}" for h in history) if history else "  （无改动）")
+            continue
+        if line == ":diff":
+            print(session.total_diff().render())
+            continue
+        if line == ":pages":
+            for i, (_, slide) in enumerate(session.current.iter_slides(), 1):
+                dwell = f"{slide.dwell_seconds:.0f}s" if slide.dwell_seconds else "-"
+                lock = " 🔒" if slide.dwell_locked else ""
+                print(f"  {i:2d}. {slide.title or '(无标题)'}  "
+                      f"[{len(slide.blocks)}块 {dwell}{lock}]")
+            continue
+        _run_utterance(session, line, selection, args)
+
+
+def _save_session(session, deck_path: pathlib.Path, log_path: pathlib.Path, args) -> None:
+    if not session.log.patches:
+        print("no changes; nothing written")
+        return
+    out = pathlib.Path(args.out) if args.out else deck_path
+    out.write_text(session.current.model_dump_json(indent=2), encoding="utf-8")
+    log_path.write_text(session.log.model_dump_json(indent=2), encoding="utf-8")
+    print()
+    print(f"applied {len(session.log.patches)} patch(es)")
+    print(f"wrote {out}")
+    print(f"wrote {log_path}  (replay with: rostrum edit {out} --replay {log_path})")
+    print()
+    print("重新出片： rostrum render " + str(out) + " [模板] --out slides.pptx")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="rostrum",
@@ -419,6 +555,40 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--export", metavar="ID", help="write a theme out as .pptx")
     t.add_argument("--out", help="output path for --export")
     t.set_defaults(func=cmd_themes)
+
+    e = sub.add_parser("edit", help="revise a deck by describing the change")
+    e.add_argument("deck", help="deck IR json produced by ingest or build")
+    e.add_argument(
+        "--say",
+        action="append",
+        metavar="UTTERANCE",
+        help="apply one instruction and exit; repeatable, applied in order",
+    )
+    e.add_argument(
+        "--select",
+        action="append",
+        metavar="UID",
+        help="uid the user has selected in a preview; repeatable",
+    )
+    e.add_argument(
+        "--template",
+        help="template to measure, so re-budgeting respects real capacity",
+    )
+    e.add_argument("--out", help="write the revised deck here (default: in place)")
+    e.add_argument("--log", help="edit-log path (default: <deck>.log.json)")
+    e.add_argument("--replay", metavar="LOG", help="replay a stored edit log first")
+    e.add_argument(
+        "--threshold",
+        type=float,
+        default=0.75,
+        help="apply automatically at or above this confidence (default: 0.75)",
+    )
+    e.add_argument(
+        "--yes",
+        action="store_true",
+        help="apply low-confidence edits without asking",
+    )
+    e.set_defaults(func=cmd_edit)
 
     b = sub.add_parser("build", help="manuscript straight to slides and script")
     b.add_argument("manuscript", help=".docx, .pdf or .tex")
