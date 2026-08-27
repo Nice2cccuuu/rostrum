@@ -330,6 +330,14 @@ class Block(IRModel):
             "from a script-channel block, which has no slide presence at all."
         ),
     )
+    channel_pinned: bool = Field(
+        default=False,
+        description=(
+            "The channel was set explicitly by a user, not derived. Automatic "
+            "rebalancing must not override it: a block sent to the script by "
+            "hand stays there even if that leaves a slide with only a heading."
+        ),
+    )
     pinned: bool = Field(
         default=False,
         description=(

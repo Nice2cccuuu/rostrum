@@ -126,6 +126,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     from rostrum.render import export_script, render_pptx
 
     out = args.out or str(pathlib.Path(args.deck).with_suffix(".pptx"))
+    pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True)
     render = render_pptx(
         deck, contract, binding, out, font_path=font,
         include_backup=not args.no_backup,
@@ -328,6 +329,10 @@ def cmd_build(args: argparse.Namespace) -> int:
     deck_path = pathlib.Path(
         args.deck_out or str(pathlib.Path(args.manuscript).with_suffix(".deck.json"))
     )
+    # Create the parent directory rather than failing on it: being told
+    # "No such file or directory" for an output path you just specified is a
+    # pointless obstacle.
+    deck_path.parent.mkdir(parents=True, exist_ok=True)
     deck_path.write_text(deck.model_dump_json(indent=2), encoding="utf-8")
     print(f"parsed {doc.source_format}: {len(doc.segments)} segments, "
           f"{len(doc.assets)} assets")
@@ -378,10 +383,10 @@ def cmd_edit(args: argparse.Namespace) -> int:
     if args.template:
         from rostrum.templates import bind, capacity_caps, ingest_pptx
 
-        contract, warnings = ingest_pptx(
+        contract, ingest_report = ingest_pptx(
             args.template, template_id=pathlib.Path(args.template).stem
         )
-        for w in warnings:
+        for w in ingest_report.warnings:
             print(f"template: {w}", file=sys.stderr)
         capacity = capacity_caps(bind(deck, contract))
         print(f"measured {len(contract.layouts)} layouts from {args.template}")
@@ -491,6 +496,162 @@ def _save_session(session, deck_path: pathlib.Path, log_path: pathlib.Path, args
     print("重新出片： rostrum render " + str(out) + " [模板] --out slides.pptx")
 
 
+def cmd_preview(args: argparse.Namespace) -> int:
+    """Render page images plus the anchor map that makes them clickable.
+
+    The anchor file is the contract between a preview and the revision engine: it
+    maps a normalised point to an IR uid, so a UI needs no knowledge of the deck
+    structure to let a user point at a bullet. Coordinates are normalised, so the
+    same file works whatever resolution the preview is rendered at.
+    """
+    from rostrum.ir.nodes import Deck
+    from rostrum.render import render_pptx
+    from rostrum.render.anchors import draw_overlay
+    from rostrum.templates import bind, capacity_caps, ingest_pptx
+
+    deck = Deck.model_validate_json(
+        pathlib.Path(args.deck).read_text(encoding="utf-8")
+    )
+    template_path, scratch = _resolve_template(args)
+    try:
+        contract, ingest_report = ingest_pptx(
+            template_path,
+            template_id=pathlib.Path(template_path).stem,
+            font_path=args.font,
+        )
+        for w in ingest_report.warnings:
+            print(f"template: {w}", file=sys.stderr)
+
+        binding = bind(deck, contract)
+        from rostrum.budget.allocate import allocate
+
+        allocate(deck, apply=True, capacity=capacity_caps(binding))
+
+        outdir = pathlib.Path(args.outdir)
+        outdir.mkdir(parents=True, exist_ok=True)
+        pptx_path = outdir / "preview.pptx"
+        report = render_pptx(
+            deck, contract, binding, str(pptx_path), font_path=args.font
+        )
+    finally:
+        if scratch:
+            with contextlib.suppress(OSError):
+                os.unlink(scratch)
+
+    anchors_path = outdir / "anchors.json"
+    report.anchors.save(str(anchors_path))
+    print(f"wrote {pptx_path}  ({report.slides_written} slides)")
+    print(f"wrote {anchors_path}  ({len(report.anchors.anchors)} anchors)")
+
+    images = _rasterise(pptx_path, outdir, dpi=args.dpi)
+    if not images:
+        print(
+            "note: no page images written (LibreOffice not found). The anchor "
+            "map is still valid -- a UI can rasterise however it likes.",
+            file=sys.stderr,
+        )
+        return 0
+
+    print(f"wrote {len(images)} page image(s) to {outdir}")
+    if args.overlay:
+        for index, image in enumerate(images):
+            out = outdir / f"overlay-{index + 1:02d}.png"
+            draw_overlay(report.anchors, index, str(image), str(out))
+        print(f"wrote {len(images)} overlay(s) — anchor boxes drawn on each page")
+    return 0
+
+
+def _rasterise(pptx_path: pathlib.Path, outdir: pathlib.Path, *, dpi: int) -> list:
+    """Render pages to PNG via LibreOffice, if it is available.
+
+    Optional on purpose: the anchor map is the real product here, and a UI will
+    usually rasterise on its own. Missing LibreOffice must not fail the command.
+    """
+    import glob
+    import shutil
+    import subprocess
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        return []
+
+    try:
+        subprocess.run(
+            [soffice, "--headless", "--convert-to", "pdf", "--outdir",
+             str(outdir), str(pptx_path)],
+            check=True, capture_output=True, timeout=180,
+        )
+        pdf = outdir / (pptx_path.stem + ".pdf")
+        if not pdf.exists():
+            return []
+        subprocess.run(
+            ["pdftoppm", "-png", "-r", str(dpi), str(pdf), str(outdir / "page")],
+            check=True, capture_output=True, timeout=180,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    return sorted(glob.glob(str(outdir / "page-*.png")))
+
+
+def cmd_point(args: argparse.Namespace) -> int:
+    """Resolve a click or a lasso to IR uids, then optionally edit them.
+
+    This is the click-to-select half of revision. The same uids feed the same
+    ``Patch`` mechanism that a purely textual request uses -- pointing replaces
+    the *description* of a target, never the operation itself.
+    """
+    from rostrum.render.anchors import AnchorMap, Box, hit_test, lasso
+
+    amap = AnchorMap.load(args.anchors)
+
+    if args.rect:
+        x, y, w, h = args.rect
+        result = lasso(amap, args.slide, Box(x=x, y=y, w=w, h=h))
+        gesture = f"矩形 ({x:.2f},{y:.2f}) {w:.2f}×{h:.2f}"
+    else:
+        if args.at is None:
+            print("point needs --at X Y or --rect X Y W H", file=sys.stderr)
+            return 2
+        x, y = args.at
+        result = hit_test(amap, args.slide, x, y, tolerance=args.tolerance)
+        gesture = f"点击 ({x:.3f}, {y:.3f})"
+
+    print(f"第 {args.slide + 1} 页 {gesture}")
+    if not result.hits:
+        print("  该位置没有可编辑的内容")
+        return 1
+    print(result.describe())
+
+    if result.ambiguous:
+        print("  ⚠ 前两个候选得分接近，建议让用户确认再改")
+
+    if not args.say:
+        return 0
+
+    from rostrum.ir.nodes import Deck
+    from rostrum.patch.session import Session
+
+    if not args.deck:
+        print("--say needs --deck to edit", file=sys.stderr)
+        return 2
+
+    deck_path = pathlib.Path(args.deck)
+    deck = Deck.model_validate_json(deck_path.read_text(encoding="utf-8"))
+    session = Session(original=deck)
+
+    selection = result.uids if args.rect else [result.best.uid]
+    print()
+    for utterance in args.say:
+        _run_utterance(session, utterance, selection, args)
+
+    if session.log.patches:
+        out = pathlib.Path(args.out) if args.out else deck_path
+        out.write_text(session.current.model_dump_json(indent=2), encoding="utf-8")
+        print()
+        print(f"wrote {out}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="rostrum",
@@ -555,6 +716,49 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--export", metavar="ID", help="write a theme out as .pptx")
     t.add_argument("--out", help="output path for --export")
     t.set_defaults(func=cmd_themes)
+
+    pv = sub.add_parser(
+        "preview", help="render page images plus a clickable anchor map"
+    )
+    pv.add_argument("deck", help="deck IR json")
+    pv.add_argument("template", nargs="?", help="template pptx (default: a theme)")
+    pv.add_argument("--theme", help="built-in theme id when no template is given")
+    pv.add_argument("--outdir", default="preview", help="output directory")
+    pv.add_argument("--dpi", type=int, default=110, help="page image resolution")
+    pv.add_argument("--font", help="font file for measurement")
+    pv.add_argument(
+        "--overlay",
+        action="store_true",
+        help="draw anchor boxes onto each page, for verifying the geometry",
+    )
+    pv.set_defaults(func=cmd_preview)
+
+    pt = sub.add_parser(
+        "point", help="resolve a click or lasso to uids, and optionally edit them"
+    )
+    pt.add_argument("anchors", help="anchors.json from `rostrum preview`")
+    pt.add_argument("--slide", type=int, default=0, help="zero-based page index")
+    pt.add_argument(
+        "--at", nargs=2, type=float, metavar=("X", "Y"),
+        help="normalised click position, 0-1 on each axis",
+    )
+    pt.add_argument(
+        "--rect", nargs=4, type=float, metavar=("X", "Y", "W", "H"),
+        help="normalised selection rectangle",
+    )
+    pt.add_argument(
+        "--tolerance", type=float, default=0.02,
+        help="how far beyond a box a click still counts (default: 0.02)",
+    )
+    pt.add_argument(
+        "--say", action="append", metavar="UTTERANCE",
+        help="edit what was selected; repeatable",
+    )
+    pt.add_argument("--deck", help="deck IR to edit, required with --say")
+    pt.add_argument("--out", help="write the revised deck here")
+    pt.add_argument("--threshold", type=float, default=0.75)
+    pt.add_argument("--yes", action="store_true")
+    pt.set_defaults(func=cmd_point)
 
     e = sub.add_parser("edit", help="revise a deck by describing the change")
     e.add_argument("deck", help="deck IR json produced by ingest or build")

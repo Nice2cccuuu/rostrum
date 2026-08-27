@@ -54,8 +54,10 @@ done and verified end to end.
 - [x] Undo / redo / replay over the edit log
 - [x] Slide-level `dwell_locked`, so a stated timing survives re-budgeting
 - [x] `rostrum edit`, interactive and batch
-- [ ] **Click-to-select**, block-level anchoring:
-      export `element_id → bbox` alongside each preview
+- [x] **Click-to-select**, block-level anchoring: `element_id → bbox` exported
+      alongside each preview, normalised so one map serves any resolution
+- [x] Ranked hit-testing with an explicit ambiguity signal; lasso selection
+- [x] `rostrum preview` / `rostrum point`, with a debug overlay
 - [ ] LLM front-end emitting the same `Patch` objects, with these rules as the
       test oracle — and a `SYNTHESIZED` derivation on anything it re-drafts
 

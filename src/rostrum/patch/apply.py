@@ -518,6 +518,8 @@ def _h_set_channel(deck: Deck, op: SetChannel, report: ApplyReport, _cap) -> Non
             "to the spoken script. Use delete_block to take it off the slide"
         )
     block.channel = op.channel
+    # Marked as a deliberate choice so that reallocation cannot undo it.
+    block.channel_pinned = True
     report.reallocated = True
 
 

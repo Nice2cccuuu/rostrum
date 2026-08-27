@@ -43,6 +43,8 @@ class SlideAllocation:
     """Budget for narration not printed on the page."""
     capacity_units: int | None = None
     """Measured layout capacity that clamped this slide, if any."""
+    heading_only: bool = False
+    """Every block was routed away by hand; the page shows only its title."""
     demoted: list[str] = field(default_factory=list)
     """Blocks moved to the script channel to respect the density caps."""
     dropped: list[str] = field(default_factory=list)
@@ -368,13 +370,27 @@ def _allocate_within_slide(
     if apply and not any(
         b.channel is Channel.SLIDE for b in candidates
     ):
-        restorable = [b for b in candidates if b.type is not BlockType.NOTE]
+        # A block the user explicitly routed to the script is not a candidate for
+        # reinstatement. Pulling it back silently undid "把这几条放到讲稿" the
+        # moment the allocator ran, and the edit appeared to work: two of three
+        # blocks moved and the third reverted with no explanation. Automatic
+        # rebalancing may fill an empty page; it may not overrule an instruction.
+        restorable = [
+            b
+            for b in candidates
+            if b.type is not BlockType.NOTE and not b.channel_pinned
+        ]
         if restorable:
             best = max(restorable, key=lambda b: b.importance)
             best.channel = Channel.SLIDE
             if best.uid in alloc.demoted:
                 alloc.demoted.remove(best.uid)
             alloc.reinstated.append(best.uid)
+        else:
+            # Recorded on the allocation so the caller can surface it; a slide
+            # showing only its heading is a legitimate outcome of an explicit
+            # instruction, but the user should be told it happened.
+            alloc.heading_only = True
 
     # -- clamp nesting depth --------------------------------------------- #
     if apply:

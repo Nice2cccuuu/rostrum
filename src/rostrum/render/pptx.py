@@ -17,6 +17,7 @@ Two consequences follow, and both are deliberate:
 
 from __future__ import annotations
 
+import contextlib
 import copy
 from dataclasses import dataclass, field
 
@@ -27,7 +28,10 @@ from rostrum.measure.text import (
     emu_to_pt,
     load_font,
     measure_text,
+    pt_to_emu,
+    wrap_text,
 )
+from rostrum.render.anchors import Anchor, AnchorMap, Box
 from rostrum.templates.binding import BindingReport
 from rostrum.templates.contract import TemplateContract
 
@@ -54,6 +58,8 @@ class RenderReport:
     shrunk_slots: list[tuple[str, str, float, float]] = field(default_factory=list)
     """``(slide_path, slot_id, from_pt, to_pt)`` autofit reductions."""
     warnings: list[str] = field(default_factory=list)
+    anchors: AnchorMap | None = None
+    """Geometry of every editable region, for click-to-select in a preview."""
 
     @property
     def overflow_rate(self) -> float:
@@ -108,6 +114,16 @@ def render_pptx(
     font = load_font(font_path)
     lang = deck.meta.language
 
+    # Anchors are emitted here rather than read back from the file, because a
+    # bullet is a paragraph inside a shared text frame and has no geometry of its
+    # own in the package. Only the renderer knows both the box and what went in it.
+    report.anchors = AnchorMap(
+        deck_uid=deck.uid,
+        slide_width_pt=emu_to_pt(prs.slide_width),
+        slide_height_pt=emu_to_pt(prs.slide_height),
+    )
+    canvas = (float(prs.slide_width), float(prs.slide_height))
+
     # Backup slides go last, always. A reserve slide sitting mid-deck will be
     # projected by accident during the talk, which is exactly what marking it
     # "backup" was meant to prevent.
@@ -136,11 +152,238 @@ def render_pptx(
             language=lang,
             report=report,
             write_notes=write_notes,
+            slide_index=report.slides_written,
+            canvas=canvas,
         )
         report.slides_written += 1
 
     prs.save(out_path)
     return report
+
+
+# --------------------------------------------------------------------------- #
+# Anchor collection
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class _AnchorSink:
+    """Records where each node was drawn, as the renderer draws it.
+
+    Per-paragraph geometry has to be *computed*: several blocks share one text
+    frame, so the file itself only knows the placeholder's box. The same wrapping
+    metrics the fit calculation used are reused here, which keeps the anchors
+    consistent with the layout decision rather than being a second guess at it.
+    """
+
+    amap: AnchorMap | None
+    deck: Deck
+    slide: Slide
+    slide_index: int
+    canvas: tuple[float, float] | None
+    font: object
+
+    @property
+    def live(self) -> bool:
+        return self.amap is not None and self.canvas is not None
+
+    def _box(self, left, top, width, height) -> Box | None:
+        """Normalise EMU geometry to slide fractions, clamped to the page."""
+        if not self.canvas:
+            return None
+        cw, ch = self.canvas
+        if not cw or not ch or width is None or height is None:
+            return None
+        x = max(0.0, min(1.0, float(left) / cw))
+        y = max(0.0, min(1.0, float(top) / ch))
+        w = min(1.0 - x, float(width) / cw)
+        h = min(1.0 - y, float(height) / ch)
+        if w <= 0 or h <= 0:
+            return None
+        return Box(x=x, y=y, w=w, h=h)
+
+    def _emit(self, uid, kind, box, preview="", confidence=1.0) -> None:
+        if not self.live or box is None:
+            return
+        base = self.deck.path_of(uid) or uid
+        # Title, subtitle and whole-page anchors all carry the slide's uid, since
+        # each resolves to an edit on that slide. Suffixing keeps them apart when
+        # a UI lists what a click could have meant.
+        path = base if kind == "block" else f"{base}:{kind}"
+        self.amap.add(
+            Anchor(
+                uid=uid,
+                kind=kind,
+                slide_index=self.slide_index,
+                slide_uid=self.slide.uid,
+                path=path,
+                box=box,
+                preview=_preview(preview),
+                confidence=confidence,
+            )
+        )
+
+    def add_slide_box(self) -> None:
+        """A whole-page anchor, so a click on empty space still resolves.
+
+        Scored low deliberately: it is the answer to "which page" when nothing
+        else was hit, never a competitor to the bullet under the cursor.
+        """
+        self._emit(
+            self.slide.uid,
+            "slide",
+            Box(x=0.0, y=0.0, w=1.0, h=1.0),
+            preview=self.slide.title or "",
+            confidence=1.0,
+        )
+
+    def add_shape(self, uid: str, kind: str, ph, preview: str = "") -> None:
+        """Anchor covering a whole placeholder -- exact, since the file says so."""
+        self._emit(
+            uid,
+            kind,
+            self._box(ph.left, ph.top, ph.width, ph.height),
+            preview=preview,
+            confidence=1.0,
+        )
+
+    def add_paragraphs(
+        self,
+        ph,
+        blocks: list[Block],
+        texts: list[str],
+        *,
+        font_size_pt: float,
+        slot,
+    ) -> None:
+        """Anchor each block to the lines it actually occupies.
+
+        Line count per block comes from the same wrapping used to choose the font
+        size, so a bullet that wrapped to three lines gets a box three lines tall.
+        Vertical anchoring is read from the shape: a body box that centres its
+        text puts the first line well below the placeholder's top, and assuming
+        top alignment put every box in the wrong place -- visible immediately in
+        the overlay, invisible to any assertion about counts.
+        """
+        if not self.live or not blocks:
+            return
+
+        box = self._box(ph.left, ph.top, ph.width, ph.height)
+        if box is None:
+            return
+
+        width_pt = emu_to_pt(ph.width) - _text_inset_pt(ph)
+        line_h_pt = font_size_pt * _LINE_SPACING
+
+        counts = []
+        for text in texts:
+            wrapped = wrap_text(
+                text, width_pt=max(1.0, width_pt), font_size_pt=font_size_pt,
+                font=self.font,
+            )
+            counts.append(max(1, len(wrapped)))
+
+        total_h_pt = sum(counts) * line_h_pt
+        box_h_pt = emu_to_pt(ph.height)
+        offset_pt = _vertical_offset_pt(ph, box_h_pt, total_h_pt)
+
+        cursor = offset_pt
+        # strict: a mismatch here would silently truncate the anchor list, so a
+        # bullet would become unclickable rather than raising.
+        for block, text, n_lines in zip(blocks, texts, counts, strict=True):
+            h_pt = n_lines * line_h_pt
+            top_emu = float(ph.top) + pt_to_emu(cursor)
+            self._emit(
+                block.uid,
+                "block",
+                self._box(top=top_emu, left=ph.left, width=ph.width, height=pt_to_emu(h_pt)),
+                preview=text,
+                # Slightly below certain: PowerPoint's own line breaking can
+                # differ from ours by a hair, so a click near a boundary may
+                # land on the neighbour. Hit-testing ranks rather than asserts.
+                confidence=0.85,
+            )
+            cursor += h_pt
+
+
+# Matches the spacing assumption in the measurement layer; a mismatch here would
+# make anchors drift down the page relative to the text they describe.
+_LINE_SPACING = 1.22
+
+
+def _text_inset_pt(ph) -> float:
+    """Left plus right internal margin of a text frame, in points."""
+    try:
+        tf = ph.text_frame
+        return emu_to_pt((tf.margin_left or 0) + (tf.margin_right or 0))
+    except Exception:  # pragma: no cover - shapes without a text frame
+        return 0.0
+
+
+def _vertical_offset_pt(ph, box_h_pt: float, text_h_pt: float) -> float:
+    """Where the first line starts, honouring the resolved vertical anchor.
+
+    The anchor must be resolved through the inheritance chain. A shape that does
+    not set it returns ``None`` from python-pptx while the real value sits on the
+    layout or the master -- and treating ``None`` as top alignment put every
+    anchor box 150px above the text it described. The overlay showed it at once;
+    no assertion about box counts would have.
+    """
+    slack = max(0.0, box_h_pt - text_h_pt)
+    anchor = _resolved_anchor(ph)
+    if anchor == "middle":
+        return slack / 2
+    if anchor == "bottom":
+        return slack
+    return 0.0
+
+
+def _resolved_anchor(ph) -> str:
+    """Vertical anchor of a placeholder, following slide → layout → master."""
+    try:
+        from pptx.enum.text import MSO_ANCHOR
+    except Exception:  # pragma: no cover
+        return "top"
+
+    names = {
+        MSO_ANCHOR.MIDDLE: "middle",
+        MSO_ANCHOR.BOTTOM: "bottom",
+        MSO_ANCHOR.TOP: "top",
+    }
+    for source in _inheritance_chain(ph):
+        try:
+            value = source.text_frame.vertical_anchor
+        except Exception:  # pragma: no cover
+            continue
+        if value is not None:
+            return names.get(value, "top")
+    return "top"
+
+
+def _inheritance_chain(ph) -> list:
+    """The shape, then its layout counterpart, then its master counterpart."""
+    chain = [ph]
+    try:
+        idx = ph.placeholder_format.idx
+        slide = ph.part.slide if hasattr(ph.part, "slide") else None
+        layout = slide.slide_layout if slide is not None else None
+    except Exception:  # pragma: no cover
+        return chain
+
+    for level in (layout, getattr(layout, "slide_master", None)):
+        if level is None:
+            continue
+        with contextlib.suppress(Exception):
+            for candidate in level.placeholders:
+                if candidate.placeholder_format.idx == idx:
+                    chain.append(candidate)
+                    break
+    return chain
+
+
+def _preview(text: str, limit: int = 24) -> str:
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= limit else flat[:limit] + "…"
 
 
 # --------------------------------------------------------------------------- #
@@ -196,8 +439,19 @@ def _write_slide(
     language: str,
     report: RenderReport,
     write_notes: bool,
+    slide_index: int = 0,
+    canvas: tuple[float, float] | None = None,
 ) -> None:
     path = deck.path_of(slide.uid) or slide.uid
+    sink = _AnchorSink(
+        amap=report.anchors,
+        deck=deck,
+        slide=slide,
+        slide_index=slide_index,
+        canvas=canvas,
+        font=font,
+    )
+    sink.add_slide_box()
     assets = deck.asset_map()
     placeholders = {f"ph{p.placeholder_format.idx}": p for p in native_slide.placeholders}
 
@@ -221,6 +475,9 @@ def _write_slide(
                 slide_path=path,
                 report=report,
             )
+            # The title anchors to the slide: clicking a heading and saying
+            # "改成「问题与挑战」" must resolve to a set_title on this page.
+            sink.add_shape(slide.uid, "title", ph, preview=slide.title)
 
     subtitle_slot = next((s for s in spec.slots if s.kind == "subtitle"), None)
     if subtitle_slot is not None and slide.subtitle:
@@ -235,6 +492,7 @@ def _write_slide(
                 slide_path=path,
                 report=report,
             )
+            sink.add_shape(slide.uid, "subtitle", ph, preview=slide.subtitle)
 
     # -- figures and tables ----------------------------------------------- #
     # Body slots are consumed largest-first: content should land in the page's
@@ -269,6 +527,12 @@ def _write_slide(
             report.missing_assets.append(block.asset_ref or block.uid)
             continue
         _place_visual(native_slide, ph, asset, block, report=report, path=path)
+        sink.add_shape(
+            block.uid,
+            "table" if asset.data else "figure",
+            ph,
+            preview=asset.caption or block.content,
+        )
 
     # -- body text -------------------------------------------------------- #
     if body_slots and text_blocks:
@@ -277,7 +541,7 @@ def _write_slide(
             ph = placeholders.get(slot.slot_id)
             if ph is None or not group:
                 continue
-            _fill_bullets(
+            size, placed, texts = _fill_bullets(
                 ph,
                 group,
                 slot=slot,
@@ -286,6 +550,10 @@ def _write_slide(
                 slide_path=path,
                 report=report,
             )
+            if size:
+                sink.add_paragraphs(
+                    ph, placed, texts, font_size_pt=size, slot=slot
+                )
     elif text_blocks:
         # No body slot at all: the content belongs in the narration rather than
         # in an invented text box that would break the template's design.
@@ -352,8 +620,12 @@ def _fill_text(
     language: str,
     slide_path: str,
     report: RenderReport,
-) -> None:
-    """Write plain lines into a placeholder, verifying they fit."""
+) -> float | None:
+    """Write plain lines into a placeholder, verifying they fit.
+
+    Returns the applied font size, which the anchor sink needs to compute
+    per-paragraph geometry from the same numbers the fit used.
+    """
     tf = ph.text_frame
     tf.clear()
     text = "\n".join(lines)
@@ -370,6 +642,7 @@ def _fill_text(
     if size is not None:
         for para in tf.paragraphs:
             para.font.size = Pt(size)
+    return size or slot.font_size_pt
 
 
 def _fill_bullets(
@@ -381,7 +654,7 @@ def _fill_bullets(
     language: str,
     slide_path: str,
     report: RenderReport,
-) -> None:
+) -> tuple[float | None, list[Block], list[str]]:
     """Write bullets into a body placeholder, preserving inherited formatting.
 
     The first paragraph is reused rather than added, because a freshly cleared
@@ -395,6 +668,7 @@ def _fill_bullets(
 
     first = True
     rendered: list[str] = []
+    placed: list[Block] = []
     for block in blocks:
         text = _block_text(block)
         if not text:
@@ -404,9 +678,10 @@ def _fill_bullets(
         para.level = min(block.level, slot.max_bullet_level)
         first = False
         rendered.append(text)
+        placed.append(block)
 
     if first:  # nothing was written
-        return
+        return None, [], []
 
     size = _fit_size(
         "\n".join(rendered),
@@ -420,6 +695,7 @@ def _fill_bullets(
     if size is not None:
         for para in tf.paragraphs:
             para.font.size = Pt(size)
+    return (size or slot.font_size_pt), placed, rendered
 
 
 def _block_text(block: Block) -> str:

@@ -201,6 +201,70 @@ work, and a revision session is reproducible:
 rostrum edit proposal.deck.json --replay proposal.log.json
 ```
 
+### Pointing instead of describing
+
+`preview` renders page images plus an anchor map: normalised boxes for every
+editable region, keyed by IR uid.
+
+```bash
+rostrum preview talk.deck.json --outdir preview --overlay
+```
+
+```
+wrote preview/preview.pptx  (13 slides)
+wrote preview/anchors.json  (47 anchors)
+wrote 13 page image(s) to preview
+wrote 13 overlay(s) — anchor boxes drawn on each page
+```
+
+Then point at something and say what to do with it:
+
+```bash
+rostrum point preview/anchors.json --slide 2 --at 0.5 0.59   --deck talk.deck.json --say '这条改短一点'
+```
+
+```
+第 3 页 点击 (0.500, 0.590)
+  [0.83] s2.p1.b2  现有自监督方法在小样本条件下普遍出现表征坍缩（r…
+  [0.52] s2.p1:slide  研究背景与问题
+
+> 这条改短一点
+  读作：精简 1 条内容，保留出处  [置信 0.90]
+    · 选中了 1 个内容块
+  text      s2.p1.b2  (出处标记 verbatim → compressed)
+    - 现有自监督方法在小样本条件下普遍出现表征坍缩（representation collapse），即不同类别…
+    + 现有自监督方法在小样本条件下普遍出现表征坍缩（representation collapse）
+  已应用：1 changed
+```
+
+Note the utterance: **"这条"**, with no page number and no quoted text. Pointing
+replaces the *description* of a target, never the operation — a click resolves to
+a uid, and that uid goes into the same `Patch` a typed request would have built.
+
+A dragged rectangle selects several at once:
+
+```bash
+rostrum point preview/anchors.json --slide 2 --rect 0.05 0.53 0.9 0.25   --deck talk.deck.json --say '这些放到讲稿里'
+```
+
+Coordinates are normalised (0-1 of the slide), so `anchors.json` works at any
+preview resolution — a web UI rendering at 1600px and a terminal thumbnail at
+400px hit-test identically. Candidates come back **ranked with scores** rather
+than as one answer, because a click near a line boundary is genuinely ambiguous:
+
+```
+第 3 页 点击 (0.500, 0.545)
+  [0.83] s2.p1.b2  现有自监督方法在小样本条件下普遍出现表征坍缩（r…
+  [0.82] s2.p1.b1  深度表征学习在大规模标注数据上取得了显著成功，但…  (距离 0.000)
+  ⚠ 前两个候选得分接近，建议让用户确认再改
+```
+
+`--overlay` draws the boxes onto the rendered pages. It exists because a bullet
+is a paragraph inside a shared text frame and has no geometry of its own in the
+file: per-block boxes are *computed* from the same font metrics that laid the text
+out, and computed geometry has to be checked against the pixels it claims to
+describe. That check found every box sitting 150px above its text.
+
 The interpreter is rule-based and runs offline -- clone the repo and it works,
 no API key. An LLM front-end is a supported extension rather than a
 prerequisite: it emits the same `Patch` objects and passes the same containment
