@@ -45,7 +45,55 @@ jobs:
           sys.exit(f'CI is missing {missing}; Beamer coverage would be skipped' if missing else 0)
           "
       - run: ruff check src tests scripts
-      - run: pytest
+
+      # Print what the runner actually has before the suite runs. When a job fails
+      # here but passes everywhere else, the difference is environmental, and
+      # without this the log gives nothing to compare against.
+      - name: Environment report
+        run: |
+          python -c "import sys, platform; print('python', sys.version)"
+          python -c "import pydantic, pptx, docx, lxml; print('pydantic', pydantic.VERSION)"
+          echo "--- CJK fonts ---"
+          fc-list | grep -ci cjk || echo "none"
+          ls -la /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc || \
+            echo "MISSING: tests hard-code this path"
+          echo "--- LaTeX ---"
+          xelatex --version | head -1 || echo "no xelatex"
+          pdftotext -v 2>&1 | head -1 || echo "no pdftotext"
+          echo "--- locale ---"
+          locale || true
+
+      # -rA surfaces every non-passing outcome. A bare `pytest` under -q shows the
+      # count and nothing else, which is not enough to diagnose a failure that only
+      # reproduces on the runner.
+      # Write the failure into the job summary, which is readable without signing
+      # in. Job logs are not: fetching them needs a token, so a failure that only
+      # exists in the log cannot be diagnosed by anyone who does not own the repo --
+      # including a contributor looking at a failed PR check.
+      - name: Run pytest
+        id: pytest
+        run: |
+          set -o pipefail
+          pytest -rA --tb=short 2>&1 | tee /tmp/pytest.out
+      - name: Publish the failure where it can be read without a token
+        if: failure() && steps.pytest.outcome == 'failure'
+        run: |
+          {
+            echo "## pytest failed on Python ${{ matrix.python-version }}"
+            echo
+            echo '```'
+            sed -n '/=* FAILURES =*/,$p' /tmp/pytest.out | head -200
+            echo '```'
+            echo
+            echo "<details><summary>environment</summary>"
+            echo
+            echo '```'
+            python -c "import sys; print('python', sys.version)"
+            python -c "import pydantic, pytest; print('pydantic', pydantic.VERSION); print('pytest', pytest.__version__)"
+            locale 2>&1 | head -5
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # A dropped test reports as a pass. This job installs every optional
       # capability, so the suite must be whole -- and the count must not quietly
@@ -75,9 +123,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: PYTHONPATH=src python3 scripts/export_schemas.py
-      - name: Fail if schemas or examples drifted
-        run: git diff --exit-code -- schemas/ examples/
+      # Compares what the schemas promise -- models, fields, required-ness, enum
+      # members -- rather than their bytes. The previous byte diff also failed
+      # whenever pydantic changed how it renders JSON Schema, which it does between
+      # minor releases while `pydantic>=2.5` accepts any of them. That produced a
+      # 169-line diff containing 12 lines of real drift, and a check that cries
+      # wolf is a check people learn to skip.
+      - name: Fail if the schemas no longer describe the models
+        run: PYTHONPATH=src python3 scripts/check_schemas.py
 
   fresh-install:
     # The defect this catches: a clean clone crashed on its first command because

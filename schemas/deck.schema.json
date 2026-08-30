@@ -257,6 +257,12 @@
           "description": "Spoken elaboration for a block that stays on the slide. Distinct from a script-channel block, which has no slide presence at all.",
           "title": "Speaker Note"
         },
+        "channel_pinned": {
+          "default": false,
+          "description": "The channel was set explicitly by a user, not derived. Automatic rebalancing must not override it: a block sent to the script by hand stays there even if that leaves a slide with only a heading.",
+          "title": "Channel Pinned",
+          "type": "boolean"
+        },
         "pinned": {
           "default": false,
           "description": "User-protected. Budget rebalancing and automated compression must leave pinned blocks untouched.",
@@ -604,6 +610,12 @@
           "default": null,
           "description": "Planned time on this slide. Summed across slides this must reconcile with the talk's total duration.",
           "title": "Dwell Seconds"
+        },
+        "dwell_locked": {
+          "default": false,
+          "description": "Protect dwell_seconds from reallocation. Set when a user states a time for this slide explicitly: re-budgeting the talk must honour that decision instead of silently overwriting it, which is the slide-level counterpart of a pinned block.",
+          "title": "Dwell Locked",
+          "type": "boolean"
         },
         "layout_hint": {
           "anyOf": [

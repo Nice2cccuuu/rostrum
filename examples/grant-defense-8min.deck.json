@@ -29,7 +29,8 @@
           "title": "面向低资源场景的高效表征学习",
           "subtitle": "国家自然科学基金面上项目",
           "blocks": [],
-          "dwell_seconds": 6.4,
+          "dwell_seconds": 0.5,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null
@@ -62,6 +63,7 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             },
@@ -87,6 +89,7 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             },
@@ -104,11 +107,13 @@
               "channel": "script",
               "word_budget": 120,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
-          "dwell_seconds": 52.7,
+          "dwell_seconds": 60.1,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null
@@ -150,6 +155,7 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             },
@@ -175,11 +181,13 @@
               "channel": "slide",
               "word_budget": null,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
-          "dwell_seconds": 45.9,
+          "dwell_seconds": 48.1,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null
@@ -221,6 +229,7 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": true,
               "tags": []
             },
@@ -246,6 +255,7 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": true,
               "tags": []
             },
@@ -271,11 +281,13 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
-          "dwell_seconds": 141.3,
+          "dwell_seconds": 171.6,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null
@@ -308,11 +320,13 @@
               "channel": "slide",
               "word_budget": null,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
           "dwell_seconds": null,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": true,
           "notes": null
@@ -354,6 +368,7 @@
               "channel": "slide",
               "word_budget": null,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             },
@@ -371,11 +386,13 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
-          "dwell_seconds": 37.4,
+          "dwell_seconds": 29.8,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null
@@ -417,6 +434,7 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             },
@@ -440,13 +458,15 @@
               "needs_confirmation": false,
               "importance": 0.5,
               "channel": "slide",
-              "word_budget": 28,
+              "word_budget": 22,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
-          "dwell_seconds": 30.8,
+          "dwell_seconds": 26.0,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null
@@ -486,8 +506,9 @@
               "needs_confirmation": false,
               "importance": 0.7,
               "channel": "slide",
-              "word_budget": 28,
+              "word_budget": 21,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             },
@@ -511,13 +532,15 @@
               "needs_confirmation": false,
               "importance": 0.5,
               "channel": "slide",
-              "word_budget": 20,
+              "word_budget": 15,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
-          "dwell_seconds": 24.7,
+          "dwell_seconds": 19.4,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null
@@ -557,8 +580,9 @@
               "needs_confirmation": false,
               "importance": 0.7,
               "channel": "slide",
-              "word_budget": 21,
+              "word_budget": 16,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             },
@@ -582,13 +606,15 @@
               "needs_confirmation": false,
               "importance": 0.5,
               "channel": "slide",
-              "word_budget": 15,
+              "word_budget": 11,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
-          "dwell_seconds": 18.5,
+          "dwell_seconds": 14.6,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null
@@ -628,8 +654,9 @@
               "needs_confirmation": false,
               "importance": 0.7,
               "channel": "slide",
-              "word_budget": 28,
+              "word_budget": 23,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             },
@@ -653,13 +680,15 @@
               "needs_confirmation": false,
               "importance": 0.5,
               "channel": "slide",
-              "word_budget": 20,
+              "word_budget": 16,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
-          "dwell_seconds": 24.7,
+          "dwell_seconds": 20.8,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null
@@ -701,6 +730,7 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             },
@@ -726,11 +756,13 @@
               "channel": "slide",
               "word_budget": 28,
               "speaker_note": null,
+              "channel_pinned": false,
               "pinned": false,
               "tags": []
             }
           ],
-          "dwell_seconds": 40.1,
+          "dwell_seconds": 31.6,
+          "dwell_locked": false,
           "layout_hint": null,
           "is_backup": false,
           "notes": null

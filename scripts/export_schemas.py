@@ -10,6 +10,7 @@ non-Python renderer can validate against them without importing Rostrum.
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import pathlib
@@ -41,6 +42,10 @@ from rostrum.patch.ops import Rewrite, SetChannel
 from rostrum.templates import TemplateContract
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+#: Output locations. Overridable via --out-dir so that a verification run can
+#: regenerate into scratch space instead of mutating the working tree; a check
+#: that rewrites what it is checking cannot be run twice.
 SCHEMAS = ROOT / "schemas"
 EXAMPLES = ROOT / "examples"
 
@@ -302,7 +307,23 @@ def build_example() -> Deck:
     return deck
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    global SCHEMAS, EXAMPLES
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--out-dir",
+        type=pathlib.Path,
+        default=None,
+        help="write schemas and examples here instead of the repository "
+        "(used by check_schemas.py to compare without touching the tree)",
+    )
+    args = parser.parse_args(argv)
+    if args.out_dir is not None:
+        SCHEMAS = args.out_dir
+        EXAMPLES = args.out_dir
+        SCHEMAS.mkdir(parents=True, exist_ok=True)
+
     # Byte-stable output so CI can diff the checked-in fixtures. Real decks use
     # random uids; only the generated examples are pinned.
     enable_deterministic_uids(seed=7)
