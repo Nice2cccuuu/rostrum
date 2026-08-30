@@ -8,6 +8,7 @@ every parse rather than only in a dedicated test.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 
 import pytest
@@ -352,9 +353,17 @@ def test_pdf_spacing_repair_leaves_real_prose_alone(raw, expect_joined):
         assert out == raw
 
 
-@pytest.mark.skipif(
-    pytest.importorskip("fitz", reason="PyMuPDF required") is None, reason="no fitz"
-)
+#: PyMuPDF is an optional extra, so its absence must skip one test rather than the
+#: file. Calling ``pytest.importorskip`` inside a ``skipif`` argument does the
+#: latter: decorator arguments are evaluated while the module loads, and the
+#: Skipped exception it raises aborts collection for everything below it. That cost
+#: 57 unrelated tests -- reported as a single "1 skipped", so the loss was
+#: invisible. It never showed up in development because this machine had PyMuPDF
+#: installed; it took a clone into a clean environment to surface.
+_HAS_FITZ = importlib.util.find_spec("fitz") is not None
+
+
+@pytest.mark.skipif(not _HAS_FITZ, reason="PyMuPDF (fitz) not installed")
 def test_pdf_parses_and_offsets_are_exact(tmp_path):
     import fitz
 

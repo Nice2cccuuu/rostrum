@@ -47,6 +47,24 @@ jobs:
       - run: ruff check src tests scripts
       - run: pytest
 
+      # A dropped test reports as a pass. This job installs every optional
+      # capability, so the suite must be whole -- and the count must not quietly
+      # fall. A misplaced importorskip once aborted collection for a whole module,
+      # losing 57 tests behind a summary line reading "1 skipped".
+      - name: Full suite must stay whole
+        run: |
+          set -euo pipefail
+          # -q prints one "path: N" line per file and no grand total, so sum them.
+          COUNT=$(pytest --collect-only -q 2>/dev/null \
+                  | awk -F': ' '/^tests\/.*: [0-9]+$/ {s+=$2} END {print s+0}')
+          echo "collected $COUNT tests"
+          if [ "$COUNT" -lt 455 ]; then
+            echo "::error::collected $COUNT tests, expected at least 455."
+            echo "Tests were lost, not skipped. Check for an importorskip that"
+            echo "aborts module collection, or a renamed/omitted test file."
+            exit 1
+          fi
+
   schemas-up-to-date:
     # The exported schemas are the contract for non-Python consumers, so a
     # stale checked-in copy is a defect.
