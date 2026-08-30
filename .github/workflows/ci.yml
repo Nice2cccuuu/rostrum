@@ -46,6 +46,24 @@ jobs:
           "
       - run: ruff check src tests scripts
 
+      # A dropped test reports as a pass. This job installs every optional
+      # capability, so the suite must be whole -- and the count must not quietly
+      # fall. A misplaced importorskip once aborted collection for a whole module,
+      # losing 57 tests behind a summary line reading "1 skipped".
+      - name: Full suite must stay whole
+        run: |
+          set -euo pipefail
+          # -q prints one "path: N" line per file and no grand total, so sum them.
+          COUNT=$(pytest --collect-only -q 2>/dev/null \
+                  | awk -F': ' '/^tests\/.*: [0-9]+$/ {s+=$2} END {print s+0}')
+          echo "collected $COUNT tests"
+          if [ "$COUNT" -lt 455 ]; then
+            echo "::error::collected $COUNT tests, expected at least 455."
+            echo "Tests were lost, not skipped. Check for an importorskip that"
+            echo "aborts module collection, or a renamed/omitted test file."
+            exit 1
+          fi
+
       # Print what the runner actually has before the suite runs. When a job fails
       # here but passes everywhere else, the difference is environmental, and
       # without this the log gives nothing to compare against.
@@ -72,11 +90,17 @@ jobs:
       # including a contributor looking at a failed PR check.
       - name: Run pytest
         id: pytest
+        # continue-on-error so the summary step below always runs and the job's
+        # failure is asserted afterwards. Gating that step on
+        # `steps.pytest.outcome` does not work: a step that fails without
+        # continue-on-error stops the job before its outcome is readable, which is
+        # exactly the case the summary exists to explain.
+        continue-on-error: true
         run: |
           set -o pipefail
           pytest -rA --tb=short 2>&1 | tee /tmp/pytest.out
       - name: Publish the failure where it can be read without a token
-        if: failure() && steps.pytest.outcome == 'failure'
+        if: always() && steps.pytest.outcome == 'failure'
         run: |
           {
             echo "## pytest failed on Python ${{ matrix.python-version }}"
@@ -95,23 +119,14 @@ jobs:
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # A dropped test reports as a pass. This job installs every optional
-      # capability, so the suite must be whole -- and the count must not quietly
-      # fall. A misplaced importorskip once aborted collection for a whole module,
-      # losing 57 tests behind a summary line reading "1 skipped".
-      - name: Full suite must stay whole
+      # continue-on-error above swallowed the failure; reinstate it, or a red
+      # suite would report as a green build.
+      - name: Fail the job if pytest failed
+        if: steps.pytest.outcome == 'failure'
         run: |
-          set -euo pipefail
-          # -q prints one "path: N" line per file and no grand total, so sum them.
-          COUNT=$(pytest --collect-only -q 2>/dev/null \
-                  | awk -F': ' '/^tests\/.*: [0-9]+$/ {s+=$2} END {print s+0}')
-          echo "collected $COUNT tests"
-          if [ "$COUNT" -lt 455 ]; then
-            echo "::error::collected $COUNT tests, expected at least 455."
-            echo "Tests were lost, not skipped. Check for an importorskip that"
-            echo "aborts module collection, or a renamed/omitted test file."
-            exit 1
-          fi
+          echo "::error::pytest failed — see the job summary for the traceback"
+          exit 1
+
 
   schemas-up-to-date:
     # The exported schemas are the contract for non-Python consumers, so a
